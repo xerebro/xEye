@@ -2,16 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import VideoPanel from './components/VideoPanel.jsx';
 import Controls from './components/Controls.jsx';
 import {
-  downloadSnapshot,
   getCameraSettings,
   getPanTiltState,
   pantiltAbsolute,
   pantiltHome,
   pantiltRelative,
   patchCameraSettings,
+  takeSnapshot,
 } from './lib/api.js';
-
-const DEBOUNCE_MS = 200;
 
 function useToast() {
   const [toast, setToast] = useState(null);
@@ -33,24 +31,9 @@ function useToast() {
   return { toast, show, dismiss };
 }
 
-function useDebouncedCallback(callback, delay) {
-  const timeoutRef = useRef();
-  const savedCallback = useRef(callback);
-
-  useEffect(() => {
-    savedCallback.current = callback;
-  }, [callback]);
-
-  return useCallback((...args) => {
-    clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => savedCallback.current(...args), delay);
-  }, [delay]);
-}
-
 export default function App() {
   const [settings, setSettings] = useState(null);
   const [ptz, setPtz] = useState(null);
-  const pendingPatch = useRef({});
   const lastKnownSettings = useRef(null);
   const initialSettings = useRef(null);
   const { toast, show: showToast, dismiss } = useToast();
@@ -60,9 +43,10 @@ export default function App() {
     getCameraSettings()
       .then((data) => {
         if (!active) return;
-        setSettings(data);
-        lastKnownSettings.current = data;
-        initialSettings.current = data;
+        const snapshot = { ...data };
+        setSettings(snapshot);
+        lastKnownSettings.current = snapshot;
+        initialSettings.current = { ...snapshot };
       })
       .catch((err) => showToast(err.message || 'Failed to load camera settings', 'error'));
 
@@ -78,45 +62,47 @@ export default function App() {
     };
   }, [showToast]);
 
-  const debouncedSave = useDebouncedCallback(async () => {
-    const payload = pendingPatch.current;
-    pendingPatch.current = {};
-    if (!Object.keys(payload).length) return;
-
-    const snapshotBefore = lastKnownSettings.current;
-    try {
-      const updated = await patchCameraSettings(payload);
-      setSettings(updated);
-      lastKnownSettings.current = updated;
-    } catch (error) {
-      console.error(error);
-      setSettings(snapshotBefore);
-      showToast(error.message || 'Failed to update settings', 'error');
-    }
-  }, DEBOUNCE_MS);
-
   const handleSettingsChange = useCallback((partial) => {
-    pendingPatch.current = { ...pendingPatch.current, ...partial };
+    const snapshotBefore = lastKnownSettings.current ? { ...lastKnownSettings.current } : null;
     setSettings((prev) => (prev ? { ...prev, ...partial } : prev));
-    debouncedSave();
-  }, [debouncedSave]);
+    patchCameraSettings(partial)
+      .then((updated) => {
+        const snapshot = { ...updated };
+        setSettings(snapshot);
+        lastKnownSettings.current = snapshot;
+      })
+      .catch((error) => {
+        console.error(error);
+        if (snapshotBefore) {
+          setSettings(snapshotBefore);
+          lastKnownSettings.current = snapshotBefore;
+        }
+        showToast(error.message || 'Failed to update settings', 'error');
+      });
+  }, [showToast]);
 
   const handleResetSettings = useCallback(async () => {
     if (!initialSettings.current) return;
+    const snapshotBefore = lastKnownSettings.current ? { ...lastKnownSettings.current } : null;
     try {
-      const updated = await patchCameraSettings(initialSettings.current);
-      setSettings(updated);
-      lastKnownSettings.current = updated;
-      pendingPatch.current = {};
+      const updated = await patchCameraSettings(initialSettings.current, { debounce: false });
+      const snapshot = { ...updated };
+      setSettings(snapshot);
+      lastKnownSettings.current = snapshot;
+      initialSettings.current = { ...snapshot };
       showToast('Settings reset to defaults', 'success');
     } catch (error) {
+      if (snapshotBefore) {
+        setSettings(snapshotBefore);
+        lastKnownSettings.current = snapshotBefore;
+      }
       showToast(error.message || 'Failed to reset settings', 'error');
     }
   }, [showToast]);
 
   const handleSnapshot = useCallback(async () => {
     try {
-      await downloadSnapshot();
+      await takeSnapshot();
       showToast('Photo saved');
     } catch (error) {
       showToast(error.message || 'Snapshot failed', 'error');

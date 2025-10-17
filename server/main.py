@@ -4,12 +4,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator, Dict
+import typing
+from typing import Dict, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .camera import FrameProvider, MockFrameProvider, PICAMERA_AVAILABLE, format_mjpeg_frame, JPEG_BOUNDARY
@@ -22,15 +25,15 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 
 class CameraSettingsPatch(BaseModel):
-    exposure_mode: str | None = Field(None, regex="^(auto|manual)$")
-    exposure_time_us: int | None = Field(None, ge=100, le=1_000_000)
-    iso_gain: float | None = Field(None, ge=1.0, le=8.0)
-    awb_enable: bool | None = None
-    awb_mode: str | None = Field(None, regex="^(auto|incandescent|fluorescent|daylight|cloudy)$")
-    brightness: float | None = Field(None, ge=-1.0, le=1.0)
-    contrast: float | None = Field(None, ge=0.0, le=2.0)
-    saturation: float | None = Field(None, ge=0.0, le=2.0)
-    sharpness: float | None = Field(None, ge=0.0, le=2.0)
+    exposure_mode: Optional[Literal["auto", "manual"]] = None
+    exposure_time_us: Optional[int] = Field(None, ge=100, le=1_000_000)
+    iso_gain: Optional[float] = Field(None, ge=1.0, le=8.0)
+    awb_enable: Optional[bool] = None
+    awb_mode: Optional[Literal["auto", "incandescent", "fluorescent", "daylight", "cloudy"]] = None
+    brightness: Optional[float] = Field(None, ge=-1.0, le=1.0)
+    contrast: Optional[float] = Field(None, ge=0.0, le=2.0)
+    saturation: Optional[float] = Field(None, ge=0.0, le=2.0)
+    sharpness: Optional[float] = Field(None, ge=0.0, le=2.0)
 
     def to_payload(self) -> Dict[str, object]:
         return {k: v for k, v in self.model_dump(exclude_none=True).items()}
@@ -82,6 +85,35 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+_stream_clients = 0
+_stream_lock: asyncio.Lock | None = None
+
+
+def _get_stream_lock() -> asyncio.Lock:
+    global _stream_lock
+    if _stream_lock is None:
+        _stream_lock = asyncio.Lock()
+    return _stream_lock
+
+
+@asynccontextmanager
+async def _track_stream_client() -> None:
+    global _stream_clients
+    lock = _get_stream_lock()
+    async with lock:
+        _stream_clients += 1
+    try:
+        yield
+    finally:
+        async with lock:
+            _stream_clients = max(0, _stream_clients - 1)
+
+
+async def _stream_client_count() -> int:
+    lock = _get_stream_lock()
+    async with lock:
+        return _stream_clients
+
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
@@ -107,18 +139,32 @@ async def patch_camera_settings(payload: CameraSettingsPatch) -> Dict[str, objec
     return settings.to_dict()
 
 
-async def mjpeg_generator() -> AsyncIterator[bytes]:
-    while True:
-        frame = frame_provider.get_latest_jpeg(wait=True, timeout=2.0)
-        if frame is None:
-            await asyncio.sleep(0.1)  # type: ignore[name-defined]
-            continue
-        yield format_mjpeg_frame(frame)
-
-
 @app.get("/api/stream.mjpg")
-async def stream_mjpeg() -> StreamingResponse:
-    return StreamingResponse(mjpeg_generator(), media_type=f"multipart/x-mixed-replace; boundary={JPEG_BOUNDARY}")
+async def stream_mjpeg(request: Request) -> StreamingResponse:
+    boundary = JPEG_BOUNDARY
+
+    async def frame_iterator() -> typing.AsyncGenerator[bytes, None]:
+        async with _track_stream_client():
+            try:
+                while frame_provider.is_running:
+                    jpeg = await frame_provider.wait_for_jpeg(timeout=1.0)
+                    if jpeg is None:
+                        if not frame_provider.is_running:
+                            break
+                        continue
+                    yield format_mjpeg_frame(jpeg)
+                    if await request.is_disconnected():
+                        break
+            except asyncio.CancelledError:  # pragma: no cover - cancellation path
+                logger.info("Client disconnected from MJPEG stream")
+                raise
+
+    headers = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    return StreamingResponse(
+        frame_iterator(),
+        media_type=f"multipart/x-mixed-replace; boundary={boundary}",
+        headers=headers,
+    )
 
 
 @app.get("/api/snapshot.jpg")
@@ -152,12 +198,10 @@ async def pantilt_home() -> Dict[str, object]:
     return state.to_dict()
 
 
-@app.get("/{full_path:path}")
-async def serve_frontend(full_path: str) -> FileResponse:
-    """Serve the built frontend if it exists, otherwise return 404."""
-    if not STATIC_DIR.exists():
-        raise HTTPException(status_code=404, detail="Frontend not built")
-    target = STATIC_DIR / full_path
-    if not target.exists():
-        target = STATIC_DIR / "index.html"
-    return FileResponse(target)
+@app.get("/healthz")
+async def healthcheck() -> Dict[str, object]:
+    return {"ok": True, "clients": await _stream_client_count()}
+
+
+if STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")

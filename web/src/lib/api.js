@@ -13,13 +13,70 @@ export async function getCameraSettings() {
   return handleJsonResponse(res);
 }
 
-export async function patchCameraSettings(partial) {
+let patchTimer;
+let pendingPatch = {};
+const patchWaiters = [];
+let flushChain = Promise.resolve();
+
+async function sendCameraPatch(payload) {
+  if (!Object.keys(payload).length) {
+    return getCameraSettings();
+  }
   const res = await fetch('/api/camera/settings', {
     method: 'PATCH',
     headers: JSON_HEADERS,
-    body: JSON.stringify(partial),
+    body: JSON.stringify(payload),
   });
   return handleJsonResponse(res);
+}
+
+async function flushPendingPatch() {
+  const payload = pendingPatch;
+  pendingPatch = {};
+  const listeners = patchWaiters.splice(0, patchWaiters.length);
+  if (!listeners.length) {
+    return;
+  }
+
+  try {
+    const updated = await sendCameraPatch(payload);
+    listeners.forEach(({ resolve }) => resolve(updated));
+  } catch (error) {
+    listeners.forEach(({ reject }) => reject(error));
+  }
+}
+
+function schedulePatchFlush(immediate = false) {
+  const trigger = () => {
+    flushChain = flushChain.then(() => flushPendingPatch()).catch(() => undefined);
+  };
+
+  if (immediate) {
+    if (patchTimer) {
+      clearTimeout(patchTimer);
+      patchTimer = undefined;
+    }
+    trigger();
+    return;
+  }
+
+  if (patchTimer) {
+    clearTimeout(patchTimer);
+  }
+  patchTimer = setTimeout(() => {
+    patchTimer = undefined;
+    trigger();
+  }, 200);
+}
+
+export function patchCameraSettings(partial, options = {}) {
+  const { debounce = true } = options;
+  Object.assign(pendingPatch, partial);
+
+  return new Promise((resolve, reject) => {
+    patchWaiters.push({ resolve, reject });
+    schedulePatchFlush(!debounce);
+  });
 }
 
 export async function getPanTiltState() {
@@ -50,17 +107,17 @@ export async function pantiltHome() {
   return handleJsonResponse(res);
 }
 
-export async function downloadSnapshot() {
+export async function takeSnapshot() {
   const res = await fetch('/api/snapshot.jpg');
   if (!res.ok) {
     throw new Error('Failed to capture snapshot');
   }
   const blob = await res.blob();
   const url = window.URL.createObjectURL(blob);
-  const timestamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0];
+  const ts = new Date().toISOString().replace(/[:.]/g, '').slice(0, 15);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `photo_${timestamp}.jpg`;
+  link.download = `photo_${ts}.jpg`;
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

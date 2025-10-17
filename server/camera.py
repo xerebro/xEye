@@ -1,6 +1,7 @@
 """Camera management utilities for the Raspberry Pi control backend."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import threading
@@ -153,9 +154,12 @@ class FrameProvider:
         logger.info("Frame provider started at %sx%s @ %sfps", *self._resolution, self._fps)
 
     def stop(self) -> None:
-        self._running = False
+        with self._condition:
+            self._running = False
+            self._condition.notify_all()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
+        self._thread = None
         self._picam.stop()
         logger.info("Frame provider stopped")
 
@@ -163,7 +167,7 @@ class FrameProvider:
         target_delay = 1.0 / self._fps
         while self._running:
             start = time.monotonic()
-            frame = self._picam.capture_array()
+            frame = self._picam.capture_array("main")
             image = Image.fromarray(frame)
 
             if self._post_state.needs_processing(self._settings):
@@ -183,15 +187,36 @@ class FrameProvider:
             if remaining > 0:
                 time.sleep(remaining)
 
-    def get_latest_jpeg(self, wait: bool = True, timeout: float = 1.0) -> Optional[bytes]:
+    def _wait_for_jpeg_locked(self, timeout: float = 1.0) -> Optional[bytes]:
+        deadline = time.monotonic() + timeout
         with self._condition:
-            if wait and self._last_jpeg is None:
-                self._condition.wait(timeout=timeout)
+            if self._last_jpeg is not None:
+                return self._last_jpeg
+
+            while self._running and self._last_jpeg is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._condition.wait(timeout=remaining)
+
             return self._last_jpeg
+
+    def get_latest_jpeg(self, wait: bool = True, timeout: float = 1.0) -> Optional[bytes]:
+        if not wait:
+            with self._condition:
+                return self._last_jpeg
+        return self._wait_for_jpeg_locked(timeout)
+
+    async def wait_for_jpeg(self, timeout: float = 1.0) -> Optional[bytes]:
+        return await asyncio.to_thread(self._wait_for_jpeg_locked, timeout)
 
     @property
     def settings(self) -> CameraSettings:
         return self._settings
+
+    @property
+    def is_running(self) -> bool:
+        return self._running
 
     def update_settings(self, patch: Dict[str, object]) -> CameraSettings:
         new_settings = CameraSettings.from_patch(self._settings, patch)
@@ -255,10 +280,13 @@ class MockFrameProvider(FrameProvider):
         self._thread.start()
 
     def stop(self) -> None:  # type: ignore[override]
-        self._running = False
+        with self._condition:
+            self._running = False
+            self._condition.notify_all()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-
+        self._thread = None
+        
     def _mock_loop(self) -> None:
         from PIL import ImageDraw  # imported lazily to avoid heavy deps
 
