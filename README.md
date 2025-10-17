@@ -7,10 +7,12 @@ pan/tilt servo management.
 
 ## Features
 
-- MJPEG stream (`/api/stream.mjpg`) backed by Picamera2 with post-processing
+- MJPEG stream (`/api/stream.mjpg`) backed by Picamera2 with post-processing,
+  graceful disconnect handling and cache-busting headers
 - Snapshot endpoint (`/api/snapshot.jpg`) returning the latest JPEG frame
 - Camera settings API (GET/PATCH) mapping to libcamera controls
 - Pan/Tilt API supporting absolute, relative and home positioning (pigpio)
+- Health check (`/healthz`) exposing the number of active streaming clients
 - React single-page frontend with joystick PTZ control and camera sliders
 
 ## Getting Started
@@ -37,6 +39,7 @@ Environment variables:
 
 - `FRONTEND_ORIGIN` – origin allowed by CORS (default `http://localhost:5173`)
 - `PAN_GPIO`, `TILT_GPIO` – override servo GPIO pins (defaults 12 & 13)
+- `UVICORN_HOST` / `UVICORN_PORT` – override bind address and port if needed
 
 ### Frontend
 
@@ -46,9 +49,22 @@ npm install
 npm run dev
 ```
 
-Build for production using `npm run build` and copy the generated `dist/`
-folder to the server directory root (`web/dist`). The backend will serve static
-assets automatically when the directory exists.
+Build for production using `npm run build`. The FastAPI app automatically mounts
+`web/dist` (when present) as a static directory and honours the configured
+`FRONTEND_ORIGIN` for CORS.
+
+### Deployment with systemd
+
+A sample unit is provided in `deploy/xeye.service`:
+
+```bash
+sudo cp deploy/xeye.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now xeye.service
+```
+
+The unit spins up a virtual environment, ensures `pigpiod` is running and then
+executes Uvicorn against `server.main:app`.
 
 ## Development Notes
 
@@ -56,7 +72,20 @@ assets automatically when the directory exists.
   Picamera2 or pigpio are unavailable.  This keeps local development usable.
 - MJPEG frames reuse the last encoded JPEG to minimise CPU load; frame rate and
   resolution defaults can be tuned within `server/camera.py`.
-- Refer to the project brief in the repository for full functional requirements.
+- Camera setting PATCH requests are debounced (200 ms) and batched client-side
+  to avoid overwhelming the ISP while sliders are dragged.
+- Code style is standardised via Black/Ruff (Python) and ESLint/Prettier
+  (frontend). Refer to `.editorconfig`, `pyproject.toml` and the configs in
+  `web/` for tooling defaults.
+
+## Quick checklist for the Raspberry Pi 5
+
+- `pigpiod` enabled and running (`sudo systemctl status pigpiod`)
+- `/api/stream.mjpg` stable for >30 seconds without CPU spikes
+- `/api/camera/settings` accepts manual exposure tweaks and applies them
+- Joystick and keyboard shortcuts (arrows, `Space`, `R`) respect the configured
+  soft limits
+- Snapshot downloads are named `photo_YYYYMMDDTHHMM.jpg`
 
 ## License
 

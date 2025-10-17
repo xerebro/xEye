@@ -24,6 +24,7 @@ SERVO_MIN_US = 500
 SERVO_MAX_US = 2500
 PAN_RANGE_DEG = PAN_LIMITS[1] - PAN_LIMITS[0]
 TILT_RANGE_DEG = TILT_LIMITS[1] - TILT_LIMITS[0]
+RELATIVE_MAX_STEP = 15.0
 
 
 @dataclass
@@ -65,6 +66,8 @@ class PanTilt(ABC):
         return self._state
 
     def apply_relative(self, dpan: float = 0.0, dtilt: float = 0.0) -> PTZState:
+        dpan = max(-RELATIVE_MAX_STEP, min(RELATIVE_MAX_STEP, dpan))
+        dtilt = max(-RELATIVE_MAX_STEP, min(RELATIVE_MAX_STEP, dtilt))
         return self.apply_absolute(self._state.pan_deg + dpan, self._state.tilt_deg + dtilt)
 
     def home(self) -> PTZState:
@@ -97,6 +100,10 @@ class PigpioPanTilt(PanTilt):
         self._pi.set_servo_pulsewidth(TILT_GPIO, self._deg_to_pulse(self._state.tilt_deg, TILT_LIMITS))
 
     def close(self) -> None:
+        try:
+            self.home()
+        except Exception:  # pragma: no cover - best effort homing
+            logger.warning("Failed to home pan/tilt before shutdown", exc_info=True)
         self._pi.set_servo_pulsewidth(PAN_GPIO, 0)
         self._pi.set_servo_pulsewidth(TILT_GPIO, 0)
         self._pi.stop()

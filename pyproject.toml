@@ -1,0 +1,13 @@
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 88
+src = ["server"]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E203", "E501"]
+target-version = "py311"
+
+[tool.ruff.lint.isort]
+known-first-party = ["server"]

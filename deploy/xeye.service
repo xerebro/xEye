@@ -1,0 +1,20 @@
+[Unit]
+Description=xEye camera controller
+After=network-online.target pigpiod.service
+Wants=network-online.target pigpiod.service
+
+[Service]
+# Adjust User/Group/WorkingDirectory to match your deployment path.
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/xEye
+Environment="PATH=/home/pi/xEye/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=-/etc/default/xeye
+ExecStartPre=/usr/bin/systemctl start pigpiod
+ExecStart=/home/pi/xEye/.venv/bin/uvicorn server.main:app --host ${UVICORN_HOST:-0.0.0.0} --port ${UVICORN_PORT:-8000}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

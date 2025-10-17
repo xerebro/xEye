@@ -180,6 +180,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: grab;
 }
 
 .joystick-thumb {
@@ -190,6 +191,11 @@ body {
   transition: transform 0.08s ease;
   touch-action: none;
   cursor: pointer;
+}
+
+.joystick:focus-visible {
+  outline: 3px solid #38bdf8;
+  outline-offset: 4px;
 }
 
 .joystick-thumb.active {
