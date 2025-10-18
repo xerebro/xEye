@@ -1,3 +1,5 @@
+export const API_BASE = '/api';
+
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 async function handleJsonResponse(res) {
@@ -9,7 +11,7 @@ async function handleJsonResponse(res) {
 }
 
 export async function getCameraSettings() {
-  const res = await fetch('/api/camera/settings');
+  const res = await fetch(`${API_BASE}/camera/settings`);
   return handleJsonResponse(res);
 }
 
@@ -22,7 +24,7 @@ async function sendCameraPatch(payload) {
   if (!Object.keys(payload).length) {
     return getCameraSettings();
   }
-  const res = await fetch('/api/camera/settings', {
+  const res = await fetch(`${API_BASE}/camera/settings`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -80,12 +82,12 @@ export function patchCameraSettings(partial, options = {}) {
 }
 
 export async function getPanTiltState() {
-  const res = await fetch('/api/pantilt');
+  const res = await fetch(`${API_BASE}/pantilt`);
   return handleJsonResponse(res);
 }
 
 export async function pantiltAbsolute(payload) {
-  const res = await fetch('/api/pantilt/absolute', {
+  const res = await fetch(`${API_BASE}/pantilt/absolute`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -94,7 +96,7 @@ export async function pantiltAbsolute(payload) {
 }
 
 export async function pantiltRelative(payload) {
-  const res = await fetch('/api/pantilt/relative', {
+  const res = await fetch(`${API_BASE}/pantilt/relative`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(payload),
@@ -103,12 +105,12 @@ export async function pantiltRelative(payload) {
 }
 
 export async function pantiltHome() {
-  const res = await fetch('/api/pantilt/home', { method: 'POST' });
+  const res = await fetch(`${API_BASE}/pantilt/home`, { method: 'POST' });
   return handleJsonResponse(res);
 }
 
 export async function takeSnapshot() {
-  const res = await fetch('/api/snapshot.jpg');
+  const res = await fetch(`${API_BASE}/snapshot.jpg`);
   if (!res.ok) {
     throw new Error('Failed to capture snapshot');
   }

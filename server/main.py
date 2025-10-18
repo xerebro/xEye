@@ -21,8 +21,6 @@ from .pantilt import MockPanTilt, PanTilt, PigpioPanTilt
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-STATIC_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
-
 
 class CameraSettingsPatch(BaseModel):
     exposure_mode: Optional[Literal["auto", "manual"]] = None
@@ -203,5 +201,7 @@ async def healthcheck() -> Dict[str, object]:
     return {"ok": True, "clients": await _stream_client_count()}
 
 
-if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="frontend")
+# Serve built frontend if available
+dist_dir = Path(__file__).resolve().parents[1] / "web" / "dist"
+if dist_dir.exists():
+    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
