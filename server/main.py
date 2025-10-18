@@ -201,7 +201,7 @@ async def healthcheck() -> Dict[str, object]:
     return {"ok": True, "clients": await _stream_client_count()}
 
 
-# Serve built frontend if available
-dist_dir = Path(__file__).resolve().parents[1] / "web" / "dist"
-if dist_dir.exists():
-    app.mount("/", StaticFiles(directory=str(dist_dir), html=True), name="frontend")
+# Serve built frontend if available (mount after /api routes)
+DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
+if DIST_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="frontend")
