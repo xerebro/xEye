@@ -41,6 +41,16 @@ Environment variables:
 - `PAN_GPIO`, `TILT_GPIO` – override servo GPIO pins (defaults 12 & 13)
 - `UVICORN_HOST` / `UVICORN_PORT` – override bind address and port if needed
 
+
+export FRONTEND_ORIGIN="http://localhost:5173"
+export PAN_GPIO=12
+export TILT_GPIO=13
+export UVICORN_HOST="0.0.0.0"
+export UVICORN_PORT=8000
+
+# Start the backend
+uvicorn server.main:app --host "$UVICORN_HOST" --port "$UVICORN_PORT"
+
 ### Frontend
 
 ```bash
