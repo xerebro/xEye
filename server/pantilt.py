@@ -1,123 +1,99 @@
-"""Pan/Tilt servo control helpers."""
-from __future__ import annotations
+# server/pantilt.py
+# New provider for Raspberry Pi 5 using lgpio (software PWM 50Hz)
+import threading, time, math
+try:
+    import lgpio  # apt: python3-lgpio
+except Exception as e:
+    lgpio = None
 
-import logging
-import os
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Tuple
+class LgpioPanTilt:
+    """
+    Software-PWM (50 Hz) Pan/Tilt for Raspberry Pi 5 via lgpio.
+    Generates 20 ms frames and sets a single high pulse per frame per servo.
+    Good enough for hobby servos; not jitter-free like pigpio, but works on Pi 5.
+    """
+    def __init__(self, pan_pin=12, tilt_pin=13, pan_lim=(-90, 90), tilt_lim=(-30, 30)):
+        if lgpio is None:
+            raise RuntimeError("lgpio not available. Install python3-lgpio.")
+        self._h = lgpio.gpiochip_open(0)  # rp1 lives at gpiochip0
+        self.pan_pin, self.tilt_pin = int(pan_pin), int(tilt_pin)
+        for p in (self.pan_pin, self.tilt_pin):
+            lgpio.gpio_claim_output(self._h, p)
+            lgpio.gpio_write(self._h, p, 0)
 
-try:  # pragma: no cover - optional dependency for development
-    import pigpio
-except ImportError:  # pragma: no cover - allows development without hardware
-    pigpio = None  # type: ignore
+        self.pan_lim = pan_lim
+        self.tilt_lim = tilt_lim
+        self.pan_deg = 0.0
+        self.tilt_deg = 0.0
 
-logger = logging.getLogger(__name__)
+        # 50 Hz servo PWM
+        self._period_s = 0.020
+        self._lock = threading.Lock()
+        self._running = True
+        self._t = threading.Thread(target=self._loop, daemon=True)
+        self._t.start()
 
-PAN_LIMITS = (-90.0, 90.0)
-TILT_LIMITS = (-30.0, 30.0)
+    def _deg_to_us(self, deg: float) -> int:
+        # center 1500us, �90� ? 500..2500us (adjust if your horns need different travel)
+        return int(1500 + (deg / 90.0) * 1000)
 
-PAN_GPIO = int(os.getenv("PAN_GPIO", "12"))
-TILT_GPIO = int(os.getenv("TILT_GPIO", "13"))
+    def _pulse(self, pin: int, pw_us: int):
+        # Raise pin for pw_us microseconds inside the 20ms frame
+        if pw_us <= 0:
+            return
+        lgpio.gpio_write(self._h, pin, 1)
+        # busy-wait short micro-sleep for better accuracy (still software)
+        t_end = time.perf_counter() + pw_us / 1_000_000.0
+        while time.perf_counter() < t_end:
+            pass
+        lgpio.gpio_write(self._h, pin, 0)
 
-SERVO_MIN_US = 500
-SERVO_MAX_US = 2500
-PAN_RANGE_DEG = PAN_LIMITS[1] - PAN_LIMITS[0]
-TILT_RANGE_DEG = TILT_LIMITS[1] - TILT_LIMITS[0]
-RELATIVE_MAX_STEP = 15.0
+    def _loop(self):
+        # single thread schedules both channels to keep pulses aligned per frame
+        next_frame = time.perf_counter()
+        while self._running:
+            with self._lock:
+                pan_us  = max(500, min(2500, self._deg_to_us(self.pan_deg)))
+                tilt_us = max(500, min(2500, self._deg_to_us(self.tilt_deg)))
+                pan_pin, tilt_pin = self.pan_pin, self.tilt_pin
 
+            start = time.perf_counter()
+            # Start both low, then generate pulses (sequence doesn't matter for servos)
+            lgpio.gpio_write(self._h, pan_pin, 0)
+            lgpio.gpio_write(self._h, tilt_pin, 0)
+            # Pulse pan then tilt (or vice versa). For better overlap, you can interleave.
+            self._pulse(pan_pin, pan_us)
+            self._pulse(tilt_pin, tilt_us)
 
-@dataclass
-class PTZState:
-    pan_deg: float = 0.0
-    tilt_deg: float = 0.0
-    limits: Tuple[Tuple[float, float], Tuple[float, float]] = (PAN_LIMITS, TILT_LIMITS)
+            # frame pacing
+            next_frame += self._period_s
+            sleep = next_frame - time.perf_counter()
+            if sleep > 0:
+                time.sleep(sleep)
+            else:
+                next_frame = time.perf_counter() + self._period_s  # skip ahead if lag
 
-    def to_dict(self) -> dict:
-        return {
-            "pan_deg": self.pan_deg,
-            "tilt_deg": self.tilt_deg,
-            "limits": {"pan": list(self.limits[0]), "tilt": list(self.limits[1])},
-        }
+    def set_absolute(self, pan_deg: float, tilt_deg: float):
+        with self._lock:
+            self.pan_deg  = float(max(self.pan_lim[0], min(self.pan_lim[1], pan_deg)))
+            self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], tilt_deg)))
 
+    def set_relative(self, dpan: float, dtilt: float):
+        with self._lock:
+            self.pan_deg  = float(max(self.pan_lim[0], min(self.pan_lim[1], self.pan_deg  + dpan)))
+            self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], self.tilt_deg + dtilt)))
 
-class PanTilt(ABC):
-    """Abstract controller for pan/tilt mechanisms."""
+    def home(self):
+        self.set_absolute(0.0, 0.0)
 
-    def __init__(self, state: PTZState | None = None) -> None:
-        self._state = state or PTZState()
-
-    @property
-    def state(self) -> PTZState:
-        return self._state
-
-    def clamp_pan(self, value: float) -> float:
-        return max(self._state.limits[0][0], min(self._state.limits[0][1], value))
-
-    def clamp_tilt(self, value: float) -> float:
-        return max(self._state.limits[1][0], min(self._state.limits[1][1], value))
-
-    def apply_absolute(self, pan_deg: float | None = None, tilt_deg: float | None = None) -> PTZState:
-        if pan_deg is not None:
-            self._state.pan_deg = self.clamp_pan(pan_deg)
-        if tilt_deg is not None:
-            self._state.tilt_deg = self.clamp_tilt(tilt_deg)
-        self._apply()
-        return self._state
-
-    def apply_relative(self, dpan: float = 0.0, dtilt: float = 0.0) -> PTZState:
-        dpan = max(-RELATIVE_MAX_STEP, min(RELATIVE_MAX_STEP, dpan))
-        dtilt = max(-RELATIVE_MAX_STEP, min(RELATIVE_MAX_STEP, dtilt))
-        return self.apply_absolute(self._state.pan_deg + dpan, self._state.tilt_deg + dtilt)
-
-    def home(self) -> PTZState:
-        return self.apply_absolute(0.0, 0.0)
-
-    @abstractmethod
-    def _apply(self) -> None:
-        """Persist the current angles to the hardware."""
-
-
-class PigpioPanTilt(PanTilt):
-    """pigpio-backed controller."""
-
-    def __init__(self, state: PTZState | None = None, host: str = "localhost") -> None:
-        super().__init__(state)
-        if pigpio is None:
-            raise RuntimeError("pigpio is not available; install and enable pigpiod")
-        self._pi = pigpio.pi(host)
-        if not self._pi.connected:  # pragma: no cover - runtime validation
-            raise RuntimeError("Failed to connect to pigpiod")
-        self._configure_gpio()
-
-    def _configure_gpio(self) -> None:
-        self._pi.set_mode(PAN_GPIO, pigpio.OUTPUT)
-        self._pi.set_mode(TILT_GPIO, pigpio.OUTPUT)
-        self._apply()
-
-    def _apply(self) -> None:
-        self._pi.set_servo_pulsewidth(PAN_GPIO, self._deg_to_pulse(self._state.pan_deg, PAN_LIMITS))
-        self._pi.set_servo_pulsewidth(TILT_GPIO, self._deg_to_pulse(self._state.tilt_deg, TILT_LIMITS))
-
-    def close(self) -> None:
+    def close(self):
+        self._running = False
         try:
-            self.home()
-        except Exception:  # pragma: no cover - best effort homing
-            logger.warning("Failed to home pan/tilt before shutdown", exc_info=True)
-        self._pi.set_servo_pulsewidth(PAN_GPIO, 0)
-        self._pi.set_servo_pulsewidth(TILT_GPIO, 0)
-        self._pi.stop()
-
-    @staticmethod
-    def _deg_to_pulse(deg: float, limits: Tuple[float, float]) -> int:
-        span = limits[1] - limits[0]
-        normalized = (deg - limits[0]) / span
-        pulse = SERVO_MIN_US + normalized * (SERVO_MAX_US - SERVO_MIN_US)
-        return int(max(SERVO_MIN_US, min(SERVO_MAX_US, pulse)))
-
-
-class MockPanTilt(PanTilt):
-    """In-memory controller used for development and testing."""
-
-    def _apply(self) -> None:  # pragma: no cover - no hardware interaction
-        logger.debug("MockPanTilt updated: %s", self._state)
+            self._t.join(timeout=0.5)
+        except: pass
+        for p in (self.pan_pin, self.tilt_pin):
+            try:
+                lgpio.gpio_write(self._h, p, 0)
+                lgpio.gpio_free(self._h, p)
+            except: pass
+        lgpio.gpiochip_close(self._h)

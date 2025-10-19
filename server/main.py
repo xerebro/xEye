@@ -15,19 +15,32 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .camera import FrameProvider, MockFrameProvider, PICAMERA_AVAILABLE, format_mjpeg_frame, JPEG_BOUNDARY
-from .pantilt import MockPanTilt, PanTilt, PigpioPanTilt
+from .camera import (
+    FrameProvider,
+    MockFrameProvider,
+    PICAMERA_AVAILABLE,
+    format_mjpeg_frame,
+    JPEG_BOUNDARY,
+)
+# PTZ provider for Raspberry Pi 5 (lgpio, software PWM)
+from .pantilt import LgpioPanTilt
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+
+# ---------------------------
+# Models
+# ---------------------------
 
 class CameraSettingsPatch(BaseModel):
     exposure_mode: Optional[Literal["auto", "manual"]] = None
     exposure_time_us: Optional[int] = Field(None, ge=100, le=1_000_000)
     iso_gain: Optional[float] = Field(None, ge=1.0, le=8.0)
     awb_enable: Optional[bool] = None
-    awb_mode: Optional[Literal["auto", "incandescent", "fluorescent", "daylight", "cloudy"]] = None
+    awb_mode: Optional[
+        Literal["auto", "incandescent", "fluorescent", "daylight", "cloudy"]
+    ] = None
     brightness: Optional[float] = Field(None, ge=-1.0, le=1.0)
     contrast: Optional[float] = Field(None, ge=0.0, le=2.0)
     saturation: Optional[float] = Field(None, ge=0.0, le=2.0)
@@ -47,26 +60,46 @@ class PTZRelative(BaseModel):
     dtilt_deg: float = Field(0.0, ge=-90, le=90)
 
 
+# ---------------------------
+# Providers wiring
+# ---------------------------
+
 def create_frame_provider() -> FrameProvider | MockFrameProvider:
-    if PICAMERA_AVAILABLE:
+    """Instantiate the real Picamera2 provider if available, otherwise Mock."""
+    use_mock = os.getenv("USE_MOCK_CAMERA", "0") == "1"
+    if not use_mock and PICAMERA_AVAILABLE:
         try:
             provider = FrameProvider()
             provider.start()
+            logger.info("Camera provider: %s", provider.__class__.__name__)
             return provider
         except Exception:  # pragma: no cover - requires hardware
-            logger.exception("Falling back to mock camera provider")
+            logger.exception("Picamera2 failed to initialize. Falling back to MockFrameProvider.")
+    else:
+        if use_mock:
+            logger.warning("Using MockFrameProvider (USE_MOCK_CAMERA=1)")
+
     mock = MockFrameProvider()
     mock.start()
+    logger.info("Camera provider: %s", mock.__class__.__name__)
     return mock
 
 
-def create_pantilt_controller() -> PanTilt:
-    try:
-        controller = PigpioPanTilt()
-        return controller
-    except Exception:  # pragma: no cover - requires hardware
-        logger.warning("Using mock pan/tilt controller (pigpio unavailable)")
-        return MockPanTilt()
+def create_pantilt_controller() -> LgpioPanTilt:
+    """Instantiate PTZ controller for Raspberry Pi 5 using lgpio (software PWM)."""
+    pan_gpio = int(os.getenv("PAN_GPIO", "12"))
+    tilt_gpio = int(os.getenv("TILT_GPIO", "13"))
+    controller = LgpioPanTilt(
+        pan_pin=pan_gpio,
+        tilt_pin=tilt_gpio,
+        pan_lim=(-90, 90),
+        tilt_lim=(-30, 30),
+    )
+    logger.info(
+        "PTZ provider: %s (pins pan=%d tilt=%d)",
+        controller.__class__.__name__, pan_gpio, tilt_gpio
+    )
+    return controller
 
 
 frame_provider = create_frame_provider()
@@ -80,7 +113,7 @@ app.add_middleware(
     allow_origins=[allowed_origin],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 _stream_clients = 0
@@ -115,10 +148,23 @@ async def _stream_client_count() -> int:
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    frame_provider.stop()
-    if isinstance(pantilt_controller, PigpioPanTilt):  # pragma: no cover - hardware path
-        pantilt_controller.close()
+    """Gracefully stop providers on shutdown."""
+    try:
+        frame_provider.stop()
+    except Exception:
+        logger.exception("Error stopping frame provider")
+    # LgpioPanTilt exposes close(); call it if available.
+    close_fn = getattr(pantilt_controller, "close", None)
+    if callable(close_fn):  # pragma: no cover - hardware path
+        try:
+            close_fn()
+        except Exception:
+            logger.exception("Error closing PTZ controller")
 
+
+# ---------------------------
+# Camera endpoints
+# ---------------------------
 
 @app.get("/api/camera/settings")
 async def get_camera_settings() -> Dict[str, object]:
@@ -173,35 +219,70 @@ async def snapshot() -> Response:
     return Response(content=frame, media_type="image/jpeg")
 
 
+# ---------------------------
+# PTZ helpers & endpoints
+# ---------------------------
+
+def _ptz_state_dict() -> Dict[str, object]:
+    """Build a PTZ state dict from LgpioPanTilt attributes."""
+    try:
+        pan = float(getattr(pantilt_controller, "pan_deg", 0.0))
+        tilt = float(getattr(pantilt_controller, "tilt_deg", 0.0))
+        pan_lim = tuple(getattr(pantilt_controller, "pan_lim", (-90.0, 90.0)))
+        tilt_lim = tuple(getattr(pantilt_controller, "tilt_lim", (-30.0, 30.0)))
+    except Exception:
+        # Safe fallback if attributes are missing
+        pan, tilt = 0.0, 0.0
+        pan_lim, tilt_lim = (-90.0, 90.0), (-30.0, 30.0)
+    return {
+        "pan_deg": pan,
+        "tilt_deg": tilt,
+        "limits": {
+            "pan": [pan_lim[0], pan_lim[1]],
+            "tilt": [tilt_lim[0], tilt_lim[1]],
+        },
+    }
+
+
 @app.get("/api/pantilt")
 async def get_pantilt_state() -> Dict[str, object]:
-    return pantilt_controller.state.to_dict()
+    return _ptz_state_dict()
 
 
 @app.post("/api/pantilt/absolute")
 async def pantilt_absolute(request: PTZAbsolute) -> Dict[str, object]:
-    state = pantilt_controller.apply_absolute(request.pan_deg, request.tilt_deg)
-    return state.to_dict()
+    # Use current angles if any field is None
+    pan = request.pan_deg if request.pan_deg is not None else getattr(pantilt_controller, "pan_deg", 0.0)
+    tilt = request.tilt_deg if request.tilt_deg is not None else getattr(pantilt_controller, "tilt_deg", 0.0)
+    pantilt_controller.set_absolute(pan, tilt)  # LgpioPanTilt API
+    return _ptz_state_dict()
 
 
 @app.post("/api/pantilt/relative")
 async def pantilt_relative(request: PTZRelative) -> Dict[str, object]:
-    state = pantilt_controller.apply_relative(request.dpan_deg, request.dtilt_deg)
-    return state.to_dict()
+    pantilt_controller.set_relative(request.dpan_deg, request.dtilt_deg)  # LgpioPanTilt API
+    return _ptz_state_dict()
 
 
 @app.post("/api/pantilt/home")
 async def pantilt_home() -> Dict[str, object]:
-    state = pantilt_controller.home()
-    return state.to_dict()
+    pantilt_controller.home()
+    return _ptz_state_dict()
 
+
+# ---------------------------
+# Health
+# ---------------------------
 
 @app.get("/healthz")
 async def healthcheck() -> Dict[str, object]:
     return {"ok": True, "clients": await _stream_client_count()}
 
 
-# Serve built frontend if available (mount after /api routes)
+# ---------------------------
+# Static frontend (mount after /api routes)
+# ---------------------------
+
 DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
 if DIST_DIR.exists():
     app.mount("/", StaticFiles(directory=str(DIST_DIR), html=True), name="frontend")
