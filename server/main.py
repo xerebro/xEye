@@ -22,8 +22,8 @@ from .camera import (
     format_mjpeg_frame,
     JPEG_BOUNDARY,
 )
-# PTZ provider for Raspberry Pi 5 (lgpio, software PWM)
-from .pantilt import LgpioPanTilt
+# PTZ providers (PCA9685 I2C preferred, lgpio fallback)
+from .pantilt import LgpioPanTilt, Pca9685PanTilt
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -85,19 +85,107 @@ def create_frame_provider() -> FrameProvider | MockFrameProvider:
     return mock
 
 
-def create_pantilt_controller() -> LgpioPanTilt:
-    """Instantiate PTZ controller for Raspberry Pi 5 using lgpio (software PWM)."""
-    pan_gpio = int(os.getenv("PAN_GPIO", "12"))
-    tilt_gpio = int(os.getenv("TILT_GPIO", "13"))
+def _parse_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        if raw.lower().startswith("0x"):
+            return int(raw, 16)
+        return int(raw)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%s. Using %s", name, raw, default)
+        return default
+
+
+def _parse_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid float for %s=%s. Using %s", name, raw, default)
+        return default
+
+
+def create_pantilt_controller() -> LgpioPanTilt | Pca9685PanTilt:
+    """Instantiate PTZ controller preferring PCA9685 with lgpio fallback."""
+
+    pan_lim = (
+        _parse_float("PAN_MIN_DEG", -90.0),
+        _parse_float("PAN_MAX_DEG", 90.0),
+    )
+    tilt_lim = (
+        _parse_float("TILT_MIN_DEG", -30.0),
+        _parse_float("TILT_MAX_DEG", 30.0),
+    )
+    if pan_lim[0] >= pan_lim[1]:
+        logger.warning("Invalid pan limits %s. Using defaults.", pan_lim)
+        pan_lim = (-90.0, 90.0)
+    if tilt_lim[0] >= tilt_lim[1]:
+        logger.warning("Invalid tilt limits %s. Using defaults.", tilt_lim)
+        tilt_lim = (-30.0, 30.0)
+
+    use_pca_env = os.getenv("USE_PCA9685")
+    force_pca = use_pca_env == "1"
+    skip_pca = use_pca_env == "0"
+
+    if not skip_pca:
+        i2c_bus = _parse_int("I2C_BUS", 1)
+        address = _parse_int("PCA9685_ADDR", 0x40)
+        pan_channel = _parse_int("PAN_CHANNEL", 1)
+        tilt_channel = _parse_int("TILT_CHANNEL", 0)
+        servo_hz = _parse_int("SERVO_HZ", 50)
+        servo_min = _parse_int("SERVO_MIN_US", 500)
+        servo_max = _parse_int("SERVO_MAX_US", 2500)
+        if servo_min >= servo_max:
+            logger.warning(
+                "Invalid servo pulse range min=%s max=%s. Using defaults.",
+                servo_min,
+                servo_max,
+            )
+            servo_min, servo_max = 500, 2500
+
+        try:
+            controller = Pca9685PanTilt(
+                i2c_bus=i2c_bus,
+                address=address,
+                pan_ch=pan_channel,
+                tilt_ch=tilt_channel,
+                pan_lim=pan_lim,
+                tilt_lim=tilt_lim,
+                servo_hz=servo_hz,
+                min_us=servo_min,
+                max_us=servo_max,
+            )
+            logger.info(
+                "PTZ provider: %s (i2c_bus=%d addr=0x%02X pan_ch=%d tilt_ch=%d)",
+                controller.__class__.__name__,
+                i2c_bus,
+                address,
+                pan_channel,
+                tilt_channel,
+            )
+            return controller
+        except Exception:
+            if force_pca:
+                raise
+            logger.exception("Failed to initialize PCA9685 PTZ. Falling back to lgpio.")
+
+    pan_gpio = _parse_int("PAN_GPIO", 12)
+    tilt_gpio = _parse_int("TILT_GPIO", 13)
     controller = LgpioPanTilt(
         pan_pin=pan_gpio,
         tilt_pin=tilt_gpio,
-        pan_lim=(-90, 90),
-        tilt_lim=(-30, 30),
+        pan_lim=pan_lim,
+        tilt_lim=tilt_lim,
     )
     logger.info(
         "PTZ provider: %s (pins pan=%d tilt=%d)",
-        controller.__class__.__name__, pan_gpio, tilt_gpio
+        controller.__class__.__name__,
+        pan_gpio,
+        tilt_gpio,
     )
     return controller
 
@@ -224,7 +312,7 @@ async def snapshot() -> Response:
 # ---------------------------
 
 def _ptz_state_dict() -> Dict[str, object]:
-    """Build a PTZ state dict from LgpioPanTilt attributes."""
+    """Build a PTZ state dict from the active controller attributes."""
     try:
         pan = float(getattr(pantilt_controller, "pan_deg", 0.0))
         tilt = float(getattr(pantilt_controller, "tilt_deg", 0.0))

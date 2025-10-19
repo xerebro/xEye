@@ -1,10 +1,158 @@
 # server/pantilt.py
-# New provider for Raspberry Pi 5 using lgpio (software PWM 50Hz)
-import threading, time, math
+# Pan/Tilt providers for Raspberry Pi setups (PCA9685 I2C + lgpio fallback)
+import errno
+import threading
+import time
+import math
+
+try:
+    import smbus
+except Exception:
+    smbus = None
+
 try:
     import lgpio  # apt: python3-lgpio
 except Exception as e:
     lgpio = None
+
+
+class PCA9685:
+    MODE1 = 0x00
+    MODE2 = 0x01
+    PRESCALE = 0xFE
+    LED0_ON_L = 0x06
+    LED0_ON_H = 0x07
+    LED0_OFF_L = 0x08
+    LED0_OFF_H = 0x09
+
+    def __init__(
+        self,
+        address=0x40,
+        busnum=1,
+        retry=5,
+        retry_delay=0.003,
+        debug=False,
+    ):
+        if smbus is None:
+            raise RuntimeError("python3-smbus not installed")
+        self.bus = smbus.SMBus(busnum)
+        self.address = address
+        self.retry = retry
+        self.retry_delay = retry_delay
+        self.debug = debug
+        time.sleep(0.01)
+        self._write(self.MODE1, 0x00)  # wake
+        time.sleep(0.01)
+        self._write(self.MODE2, 0x04)  # OUTDRV
+        time.sleep(0.005)
+
+    def _wbd(self, reg, val):
+        for _ in range(self.retry):
+            try:
+                self.bus.write_byte_data(self.address, reg, int(val) & 0xFF)
+                return
+            except OSError as e:
+                if getattr(e, "errno", None) in (errno.EAGAIN, 11):
+                    time.sleep(self.retry_delay)
+                    continue
+                raise
+            except BlockingIOError:
+                time.sleep(self.retry_delay)
+                continue
+        raise BlockingIOError("I2C write failed after retries")
+
+    def _rbd(self, reg):
+        for _ in range(self.retry):
+            try:
+                return self.bus.read_byte_data(self.address, reg) & 0xFF
+            except OSError as e:
+                if getattr(e, "errno", None) in (errno.EAGAIN, 11):
+                    time.sleep(self.retry_delay)
+                    continue
+                raise
+            except BlockingIOError:
+                time.sleep(self.retry_delay)
+                continue
+        raise BlockingIOError("I2C read failed after retries")
+
+    def _write(self, reg, val):
+        self._wbd(reg, val)
+
+    def _read(self, reg):
+        return self._rbd(reg)
+
+    def setPWMFreq(self, hz):
+        prescaleval = 25_000_000.0 / 4096.0 / float(hz) - 1.0
+        prescale = int(math.floor(prescaleval + 0.5))
+        prescale = max(3, min(255, prescale))
+        oldmode = self._read(self.MODE1)
+        self._write(self.MODE1, (oldmode & 0x7F) | 0x10)  # sleep
+        time.sleep(0.005)
+        self._write(self.PRESCALE, prescale)
+        self._write(self.MODE1, oldmode)  # wake
+        time.sleep(0.005)
+        self._write(self.MODE1, oldmode | 0x80)  # restart
+        time.sleep(0.005)
+
+    def setPWM(self, channel, on, off):
+        base = self.LED0_ON_L + 4 * int(channel)
+        self._write(base + 0, on & 0xFF)
+        self._write(base + 1, (on >> 8) & 0x0F)
+        self._write(base + 2, off & 0xFF)
+        self._write(base + 3, (off >> 8) & 0x0F)
+
+    def setServoPulse(self, channel, pulse_us, period_us=20000):
+        ticks = int(round((float(pulse_us) * 4096.0) / float(period_us)))
+        ticks = max(0, min(4095, ticks))
+        self.setPWM(channel, 0, ticks)
+
+
+class Pca9685PanTilt:
+    def __init__(
+        self,
+        i2c_bus=1,
+        address=0x40,
+        pan_ch=1,
+        tilt_ch=0,
+        pan_lim=(-90, 90),
+        tilt_lim=(-30, 30),
+        servo_hz=50,
+        min_us=500,
+        max_us=2500,
+    ):
+        self.pwm = PCA9685(address=address, busnum=i2c_bus)
+        self.pwm.setPWMFreq(servo_hz)
+        self.pan_ch, self.tilt_ch = int(pan_ch), int(tilt_ch)
+        self.pan_lim, self.tilt_lim = pan_lim, tilt_lim
+        self.min_us, self.max_us = int(min_us), int(max_us)
+        self.pan_deg = 0.0
+        self.tilt_deg = 0.0
+        self.home()
+
+    def _deg_to_us(self, deg: float) -> int:
+        # map -90..+90 → min..max (or adjust if 0..180 fits better to your linkage)
+        # Here we assume -90..+90 -> min..max
+        deg = float(deg)
+        span = self.max_us - self.min_us
+        # normalize -90..+90 to 0..1
+        t = (deg + 90.0) / 180.0
+        return int(self.min_us + span * max(0.0, min(1.0, t)))
+
+    def set_absolute(self, pan_deg: float, tilt_deg: float):
+        self.pan_deg = float(max(self.pan_lim[0], min(self.pan_lim[1], pan_deg)))
+        self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], tilt_deg)))
+        self.pwm.setServoPulse(self.pan_ch, self._deg_to_us(self.pan_deg))
+        self.pwm.setServoPulse(self.tilt_ch, self._deg_to_us(self.tilt_deg))
+
+    def set_relative(self, dpan: float, dtilt: float):
+        self.set_absolute(self.pan_deg + dpan, self.tilt_deg + dtilt)
+
+    def home(self):
+        self.set_absolute(0.0, 0.0)
+
+    def close(self):
+        # Optionally stop pulses (PCA keeps last value; many setups prefer holding torque)
+        pass
 
 class LgpioPanTilt:
     """
@@ -34,7 +182,7 @@ class LgpioPanTilt:
         self._t.start()
 
     def _deg_to_us(self, deg: float) -> int:
-        # center 1500us, �90� ? 500..2500us (adjust if your horns need different travel)
+        # center 1500us, ±90° ≈ 500..2500us (adjust if your horns need different travel)
         return int(1500 + (deg / 90.0) * 1000)
 
     def _pulse(self, pin: int, pw_us: int):
