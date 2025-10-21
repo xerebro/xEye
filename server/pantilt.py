@@ -115,7 +115,7 @@ class Pca9685PanTilt:
         pan_ch=1,
         tilt_ch=0,
         pan_lim=(-90, 90),
-        tilt_lim=(-30, 30),
+        tilt_lim=(-70, 70),
         servo_hz=50,
         min_us=500,
         max_us=2500,
@@ -160,7 +160,7 @@ class LgpioPanTilt:
     Generates 20 ms frames and sets a single high pulse per frame per servo.
     Good enough for hobby servos; not jitter-free like pigpio, but works on Pi 5.
     """
-    def __init__(self, pan_pin=12, tilt_pin=13, pan_lim=(-90, 90), tilt_lim=(-30, 30)):
+    def __init__(self, pan_pin=12, tilt_pin=13, pan_lim=(-90, 90), tilt_lim=(-70, 70)):
         if lgpio is None:
             raise RuntimeError("lgpio not available. Install python3-lgpio.")
         self._h = lgpio.gpiochip_open(0)  # rp1 lives at gpiochip0

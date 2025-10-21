@@ -117,15 +117,15 @@ def create_pantilt_controller() -> LgpioPanTilt | Pca9685PanTilt:
         _parse_float("PAN_MAX_DEG", 90.0),
     )
     tilt_lim = (
-        _parse_float("TILT_MIN_DEG", -30.0),
-        _parse_float("TILT_MAX_DEG", 30.0),
+        _parse_float("TILT_MIN_DEG", -70.0),
+        _parse_float("TILT_MAX_DEG", 70.0),
     )
     if pan_lim[0] >= pan_lim[1]:
         logger.warning("Invalid pan limits %s. Using defaults.", pan_lim)
         pan_lim = (-90.0, 90.0)
     if tilt_lim[0] >= tilt_lim[1]:
         logger.warning("Invalid tilt limits %s. Using defaults.", tilt_lim)
-        tilt_lim = (-30.0, 30.0)
+        tilt_lim = (-70.0, 70.0)
 
     use_pca_env = os.getenv("USE_PCA9685")
     force_pca = use_pca_env == "1"
@@ -317,11 +317,11 @@ def _ptz_state_dict() -> Dict[str, object]:
         pan = float(getattr(pantilt_controller, "pan_deg", 0.0))
         tilt = float(getattr(pantilt_controller, "tilt_deg", 0.0))
         pan_lim = tuple(getattr(pantilt_controller, "pan_lim", (-90.0, 90.0)))
-        tilt_lim = tuple(getattr(pantilt_controller, "tilt_lim", (-30.0, 30.0)))
+        tilt_lim = tuple(getattr(pantilt_controller, "tilt_lim", (-70.0, 70.0)))
     except Exception:
         # Safe fallback if attributes are missing
         pan, tilt = 0.0, 0.0
-        pan_lim, tilt_lim = (-90.0, 90.0), (-30.0, 30.0)
+        pan_lim, tilt_lim = (-90.0, 90.0), (-70.0, 70.0)
     return {
         "pan_deg": pan,
         "tilt_deg": tilt,

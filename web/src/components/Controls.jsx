@@ -223,8 +223,8 @@ export default function Controls({
               type="number"
               value={tilt}
               step="1"
-              min={ptz?.limits.tilt[0] ?? -30}
-              max={ptz?.limits.tilt[1] ?? 30}
+              min={ptz?.limits.tilt[0] ?? -70}
+              max={ptz?.limits.tilt[1] ?? 70}
               onChange={(event) => setTilt(Number(event.target.value))}
             />
             <div className="button-row">
