@@ -16,7 +16,7 @@ pan/tilt servo management.
 - React single-page frontend with joystick PTZ control and camera sliders
 
 ### Start the backend
-
+source /home/xerebro/projects/xEye/xEye/.venv/bin/activate
 export USE_PCA9685=1
 export I2C_BUS=1
 export PCA9685_ADDR=0x40
