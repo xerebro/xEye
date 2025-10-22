@@ -42,6 +42,8 @@ class CameraSettings:
     contrast: float = 1.0
     saturation: float = 1.0
     sharpness: float = 1.0
+    low_light: bool = False
+    zoom: float = 1.0
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -54,6 +56,8 @@ class CameraSettings:
             "contrast": self.contrast,
             "saturation": self.saturation,
             "sharpness": self.sharpness,
+            "low_light": self.low_light,
+            "zoom": self.zoom,
         }
 
     @classmethod
@@ -129,6 +133,9 @@ class FrameProvider:
         self._picam = Picamera2()
         self._settings = CameraSettings()
         self._post_state = PostProcessState()
+        self._low_light_enabled = False
+        self._default_frame_limits: tuple[int, int] | None = None
+        self._sensor_resolution = getattr(self._picam, "sensor_resolution", None)
 
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
@@ -140,9 +147,11 @@ class FrameProvider:
         if self._running:
             return
 
+        frame_limit = (int(1e6 / self._fps), int(1e6 / self._fps))
+        self._default_frame_limits = frame_limit
         stream_config = self._picam.create_video_configuration(
             main={"size": self._resolution, "format": "RGB888"},
-            controls={"FrameDurationLimits": (int(1e6 / self._fps), int(1e6 / self._fps))},
+            controls={"FrameDurationLimits": frame_limit},
         )
         self._picam.configure(stream_config)
         self._apply_controls(self._settings)
@@ -244,6 +253,70 @@ class FrameProvider:
             self._picam.set_controls(controls)
         except Exception:  # pragma: no cover - hardware specific failure path
             logger.exception("Failed to set camera controls: %s", controls)
+
+        self._apply_low_light(settings)
+        self._apply_zoom(settings.zoom)
+
+    def _apply_low_light(self, settings: CameraSettings) -> None:
+        if not PICAMERA_AVAILABLE:
+            return
+
+        enable = bool(settings.low_light and settings.exposure_mode == "auto")
+        if enable == self._low_light_enabled:
+            return
+
+        try:
+            if enable:
+                controls = {
+                    "AeEnable": True,
+                    "AeExposureMode": 2,
+                    "FrameDurationLimits": (20000, 200000),
+                    "AwbEnable": True,
+                    "NoiseReductionMode": 2,
+                }
+                self._picam.set_controls(controls)
+                self._picam.set_controls({"ExposureTime": 0})
+            else:
+                limits = self._default_frame_limits or (int(1e6 / self._fps), int(1e6 / self._fps))
+                controls = {
+                    "AeExposureMode": 0,
+                    "FrameDurationLimits": limits,
+                    "NoiseReductionMode": 1,
+                }
+                self._picam.set_controls(controls)
+        except Exception:  # pragma: no cover - hardware specific failure path
+            logger.exception("Failed to toggle low-light controls")
+        finally:
+            self._low_light_enabled = enable
+
+    def _apply_zoom(self, level: float) -> None:
+        if not PICAMERA_AVAILABLE:
+            return
+
+        try:
+            zoom = max(1.0, min(4.0, float(level)))
+        except (TypeError, ValueError):
+            zoom = 1.0
+
+        sensor_resolution = self._sensor_resolution
+        if not sensor_resolution:
+            try:
+                sensor_resolution = tuple(self._picam.sensor_resolution)  # type: ignore[attr-defined]
+                self._sensor_resolution = sensor_resolution
+            except Exception:  # pragma: no cover - hardware specific failure path
+                return
+
+        sensor_w, sensor_h = sensor_resolution
+        scale = 1.0 / zoom
+        crop_w = max(1, int(sensor_w * scale))
+        crop_h = max(1, int(sensor_h * scale))
+        x = max(0, (sensor_w - crop_w) // 2)
+        y = max(0, (sensor_h - crop_h) // 2)
+
+        try:
+            self._picam.set_controls({"ScalerCrop": (x, y, crop_w, crop_h)})
+        except Exception:  # pragma: no cover - hardware specific failure path
+            logger.exception("Failed to set zoom controls")
 
 
 def format_mjpeg_frame(jpeg: bytes) -> bytes:

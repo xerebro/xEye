@@ -52,6 +52,8 @@ export default function Controls({
   const contrast = Number(settings.contrast ?? 1);
   const saturation = Number(settings.saturation ?? 1);
   const sharpness = Number(settings.sharpness ?? 1);
+  const lowLight = Boolean(settings.low_light);
+  const zoom = Number(settings.zoom ?? 1);
 
   const handleExposureSlider = (event) => {
     onSettingsChange({ exposure_time_us: fromExposureSlider(Number(event.target.value)) });
@@ -69,8 +71,16 @@ export default function Controls({
     onSettingsChange({ awb_mode: event.target.value });
   };
 
+  const handleLowLight = (event) => {
+    onSettingsChange({ low_light: event.target.checked });
+  };
+
   const handleRange = (key) => (event) => {
     onSettingsChange({ [key]: Number(event.target.value) });
+  };
+
+  const handleZoom = (event) => {
+    onSettingsChange({ zoom: Number(event.target.value) });
   };
 
   const handleAbsoluteSubmit = (event) => {
@@ -155,6 +165,18 @@ export default function Controls({
             </select>
           </div>
           <div className="control-row">
+            <label htmlFor="low-light" title="Available in auto exposure mode">
+              <input
+                id="low-light"
+                type="checkbox"
+                checked={lowLight}
+                disabled={settings.exposure_mode !== 'auto'}
+                onChange={handleLowLight}
+              />{' '}
+              Low light mode
+            </label>
+          </div>
+          <div className="control-row">
             <label htmlFor="brightness">Brightness ({brightness.toFixed(2)})</label>
             <input
               id="brightness"
@@ -200,6 +222,18 @@ export default function Controls({
               step="0.05"
               value={sharpness}
               onChange={handleRange('sharpness')}
+            />
+          </div>
+          <div className="control-row">
+            <label htmlFor="zoom">Zoom ({zoom.toFixed(1)}×)</label>
+            <input
+              id="zoom"
+              type="range"
+              min="1"
+              max="4"
+              step="0.1"
+              value={zoom}
+              onChange={handleZoom}
             />
           </div>
         </section>

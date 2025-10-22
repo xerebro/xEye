@@ -16,6 +16,10 @@ except Exception as e:
     lgpio = None
 
 
+MIN_STEP_DEG = 0.2
+GLIDE_MS = 200
+
+
 class PCA9685:
     MODE1 = 0x00
     MODE2 = 0x01
@@ -138,14 +142,48 @@ class Pca9685PanTilt:
         t = (deg + 90.0) / 180.0
         return int(self.min_us + span * max(0.0, min(1.0, t)))
 
+    def _clamp(self, value: float, limits: tuple[float, float]) -> float:
+        return float(max(limits[0], min(limits[1], value)))
+
+    def _write_position(self, pan: float, tilt: float) -> None:
+        self.pwm.setServoPulse(self.pan_ch, self._deg_to_us(pan))
+        self.pwm.setServoPulse(self.tilt_ch, self._deg_to_us(tilt))
+
     def set_absolute(self, pan_deg: float, tilt_deg: float):
-        self.pan_deg = float(max(self.pan_lim[0], min(self.pan_lim[1], pan_deg)))
-        self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], tilt_deg)))
-        self.pwm.setServoPulse(self.pan_ch, self._deg_to_us(self.pan_deg))
-        self.pwm.setServoPulse(self.tilt_ch, self._deg_to_us(self.tilt_deg))
+        pan = self._clamp(pan_deg, self.pan_lim)
+        tilt = self._clamp(tilt_deg, self.tilt_lim)
+        self.pan_deg = pan
+        self.tilt_deg = tilt
+        self._write_position(self.pan_deg, self.tilt_deg)
+
+    def _glide_to(self, pan_target: float, tilt_target: float, smooth_ms: int) -> None:
+        steps = max(1, int(smooth_ms / 5))
+        pan_step = (pan_target - self.pan_deg) / steps
+        tilt_step = (tilt_target - self.tilt_deg) / steps
+
+        if abs(pan_step) < MIN_STEP_DEG and abs(tilt_step) < MIN_STEP_DEG:
+            self.pan_deg = pan_target
+            self.tilt_deg = tilt_target
+            self._write_position(self.pan_deg, self.tilt_deg)
+            return
+
+        for _ in range(steps):
+            self.pan_deg += pan_step
+            self.tilt_deg += tilt_step
+            self._write_position(self.pan_deg, self.tilt_deg)
+            time.sleep(0.005)
+
+        self.pan_deg = pan_target
+        self.tilt_deg = tilt_target
+        self._write_position(self.pan_deg, self.tilt_deg)
+
+    def move_relative(self, dpan: float, dtilt: float, smooth_ms: int = GLIDE_MS):
+        target_pan = self._clamp(self.pan_deg + dpan, self.pan_lim)
+        target_tilt = self._clamp(self.tilt_deg + dtilt, self.tilt_lim)
+        self._glide_to(target_pan, target_tilt, smooth_ms)
 
     def set_relative(self, dpan: float, dtilt: float):
-        self.set_absolute(self.pan_deg + dpan, self.tilt_deg + dtilt)
+        self.move_relative(dpan, dtilt)
 
     def home(self):
         self.set_absolute(0.0, 0.0)
@@ -221,15 +259,50 @@ class LgpioPanTilt:
             else:
                 next_frame = time.perf_counter() + self._period_s  # skip ahead if lag
 
-    def set_absolute(self, pan_deg: float, tilt_deg: float):
+    def _clamp(self, value: float, limits: tuple[float, float]) -> float:
+        return float(max(limits[0], min(limits[1], value)))
+
+    def _set_position(self, pan: float, tilt: float) -> None:
         with self._lock:
-            self.pan_deg  = float(max(self.pan_lim[0], min(self.pan_lim[1], pan_deg)))
-            self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], tilt_deg)))
+            self.pan_deg = pan
+            self.tilt_deg = tilt
+
+    def set_absolute(self, pan_deg: float, tilt_deg: float):
+        pan = self._clamp(pan_deg, self.pan_lim)
+        tilt = self._clamp(tilt_deg, self.tilt_lim)
+        self._set_position(pan, tilt)
+
+    def _glide_to(self, pan_target: float, tilt_target: float, smooth_ms: int) -> None:
+        steps = max(1, int(smooth_ms / 5))
+        with self._lock:
+            pan_start = self.pan_deg
+            tilt_start = self.tilt_deg
+        pan_step = (pan_target - pan_start) / steps
+        tilt_step = (tilt_target - tilt_start) / steps
+
+        if abs(pan_step) < MIN_STEP_DEG and abs(tilt_step) < MIN_STEP_DEG:
+            self._set_position(pan_target, tilt_target)
+            return
+
+        current_pan, current_tilt = pan_start, tilt_start
+        for _ in range(steps):
+            current_pan += pan_step
+            current_tilt += tilt_step
+            self._set_position(current_pan, current_tilt)
+            time.sleep(0.005)
+
+        self._set_position(pan_target, tilt_target)
+
+    def move_relative(self, dpan: float, dtilt: float, smooth_ms: int = GLIDE_MS):
+        with self._lock:
+            pan_start = self.pan_deg
+            tilt_start = self.tilt_deg
+        target_pan = self._clamp(pan_start + dpan, self.pan_lim)
+        target_tilt = self._clamp(tilt_start + dtilt, self.tilt_lim)
+        self._glide_to(target_pan, target_tilt, smooth_ms)
 
     def set_relative(self, dpan: float, dtilt: float):
-        with self._lock:
-            self.pan_deg  = float(max(self.pan_lim[0], min(self.pan_lim[1], self.pan_deg  + dpan)))
-            self.tilt_deg = float(max(self.tilt_lim[0], min(self.tilt_lim[1], self.tilt_deg + dtilt)))
+        self.move_relative(dpan, dtilt)
 
     def home(self):
         self.set_absolute(0.0, 0.0)

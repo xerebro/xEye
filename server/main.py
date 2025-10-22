@@ -9,7 +9,7 @@ from pathlib import Path
 import typing
 from typing import Dict, Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -45,6 +45,8 @@ class CameraSettingsPatch(BaseModel):
     contrast: Optional[float] = Field(None, ge=0.0, le=2.0)
     saturation: Optional[float] = Field(None, ge=0.0, le=2.0)
     sharpness: Optional[float] = Field(None, ge=0.0, le=2.0)
+    low_light: Optional[bool] = None
+    zoom: Optional[float] = Field(None, ge=1.0, le=4.0)
 
     def to_payload(self) -> Dict[str, object]:
         return {k: v for k, v in self.model_dump(exclude_none=True).items()}
@@ -58,6 +60,11 @@ class PTZAbsolute(BaseModel):
 class PTZRelative(BaseModel):
     dpan_deg: float = Field(0.0, ge=-90, le=90)
     dtilt_deg: float = Field(0.0, ge=-90, le=90)
+
+
+class PTZNudge(BaseModel):
+    pan_deg: float = Field(0.0, ge=-90, le=90)
+    tilt_deg: float = Field(0.0, ge=-90, le=90)
 
 
 # ---------------------------
@@ -332,6 +339,15 @@ def _ptz_state_dict() -> Dict[str, object]:
     }
 
 
+ptz_router = APIRouter(prefix="/api/ptz", tags=["ptz"])
+
+
+@ptz_router.post("/relative")
+async def ptz_relative(move: PTZNudge) -> Dict[str, object]:
+    pantilt_controller.move_relative(move.pan_deg, move.tilt_deg)
+    return {"ok": True, **_ptz_state_dict()}
+
+
 @app.get("/api/pantilt")
 async def get_pantilt_state() -> Dict[str, object]:
     return _ptz_state_dict()
@@ -370,6 +386,8 @@ async def healthcheck() -> Dict[str, object]:
 # ---------------------------
 # Static frontend (mount after /api routes)
 # ---------------------------
+
+app.include_router(ptz_router)
 
 DIST_DIR = Path(__file__).resolve().parents[1] / "web" / "dist"
 if DIST_DIR.exists():
