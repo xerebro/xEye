@@ -62,6 +62,29 @@ export default function App() {
     };
   }, [showToast]);
 
+  useEffect(() => {
+    let cancelled = false;
+    const poll = () => {
+      getPanTiltState()
+        .then((data) => {
+          if (!cancelled) {
+            setPtz(data);
+          }
+        })
+        .catch((error) => {
+          if (!cancelled) {
+            console.debug('PTZ poll failed', error);
+          }
+        });
+    };
+    poll();
+    const id = setInterval(poll, 1000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+
   const handleSettingsChange = useCallback((partial) => {
     const snapshotBefore = lastKnownSettings.current ? { ...lastKnownSettings.current } : null;
     setSettings((prev) => (prev ? { ...prev, ...partial } : prev));
@@ -172,7 +195,6 @@ export default function App() {
       <main className="app-main">
         <VideoPanel
           badge={manualBadge}
-          onRelativeMove={applyRelative}
           onHome={handleHome}
           ptz={ptz}
         />

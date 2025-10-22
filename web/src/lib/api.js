@@ -104,6 +104,19 @@ export async function pantiltRelative(payload) {
   return handleJsonResponse(res);
 }
 
+export async function ptzNudge(panDeg, tiltDeg) {
+  const res = await fetch(`${API_BASE}/ptz/relative`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ pan_deg: panDeg, tilt_deg: tiltDeg }),
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(detail || res.statusText);
+  }
+  return res.json().catch(() => ({}));
+}
+
 export async function pantiltHome() {
   const res = await fetch(`${API_BASE}/pantilt/home`, { method: 'POST' });
   return handleJsonResponse(res);
