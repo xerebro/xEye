@@ -181,6 +181,9 @@ body {
   align-items: center;
   justify-content: center;
   cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+  user-select: none;
 }
 
 .joystick-thumb {
