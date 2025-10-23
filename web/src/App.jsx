@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import VideoPanel from './components/VideoPanel.jsx';
 import Controls from './components/Controls.jsx';
+import PTZControls from './components/PTZControls.jsx';
 import {
   getCameraSettings,
   getPanTiltState,
@@ -37,6 +38,15 @@ export default function App() {
   const lastKnownSettings = useRef(null);
   const initialSettings = useRef(null);
   const { toast, show: showToast, dismiss } = useToast();
+  const [monitoring, setMonitoring] = useState(false);
+  const monitoringRef = useRef(false);
+
+  useEffect(() => {
+    monitoringRef.current = monitoring;
+    return () => {
+      monitoringRef.current = false;
+    };
+  }, [monitoring]);
 
   useEffect(() => {
     let active = true;
@@ -165,6 +175,7 @@ export default function App() {
   }, [showToast]);
 
   const handleHome = useCallback(async () => {
+    setMonitoring(false);
     try {
       const updated = await pantiltHome();
       setPtz(updated);
@@ -172,6 +183,69 @@ export default function App() {
       showToast(error.message || 'Failed to home PTZ', 'error');
     }
   }, [showToast]);
+
+  useEffect(() => {
+    if (!ptz) {
+      setMonitoring(false);
+    }
+  }, [ptz]);
+
+  useEffect(() => {
+    if (!monitoring || !ptz) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const panLimits = ptz.limits?.pan ?? [-90, 90];
+    const tiltLimits = ptz.limits?.tilt ?? [-70, 70];
+
+    const clamp = (value, [min, max]) => Math.max(min, Math.min(max, value));
+
+    const patrolPoints = [
+      { pan_deg: -40, tilt_deg: 0 },
+      { pan_deg: -40, tilt_deg: 40 },
+      { pan_deg: 0, tilt_deg: 40 },
+      { pan_deg: 40, tilt_deg: 40 },
+      { pan_deg: 40, tilt_deg: 0 },
+      { pan_deg: 40, tilt_deg: -40 },
+      { pan_deg: 0, tilt_deg: -40 },
+      { pan_deg: -40, tilt_deg: -40 },
+      { pan_deg: 0, tilt_deg: 0 },
+    ].map((point) => ({
+      pan_deg: clamp(point.pan_deg, panLimits),
+      tilt_deg: clamp(point.tilt_deg, tiltLimits),
+    }));
+
+    const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    const cycle = async () => {
+      let index = 0;
+      while (!cancelled && monitoringRef.current) {
+        const target = patrolPoints[index];
+        index = (index + 1) % patrolPoints.length;
+        await applyAbsolute(target);
+        await wait(1500);
+      }
+    };
+
+    cycle();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [monitoring, ptz, applyAbsolute]);
+
+  const handleToggleMonitoring = useCallback(() => {
+    if (!ptz) {
+      showToast('Pan/tilt state not ready yet', 'info');
+      return;
+    }
+    setMonitoring((active) => !active);
+  }, [ptz, showToast]);
+
+  const handleZoomUpdate = useCallback((nextZoom) => {
+    handleSettingsChange({ zoom: Number(nextZoom) });
+  }, [handleSettingsChange]);
 
   useEffect(() => {
     const listener = (event) => {
@@ -211,6 +285,14 @@ export default function App() {
           badge={manualBadge}
           onHome={handleHome}
           ptz={ptz}
+        />
+        <PTZControls
+          step={5}
+          onRelativeMove={ptz ? applyRelative : undefined}
+          zoom={Number(settings?.zoom ?? 1)}
+          onZoomChange={settings ? handleZoomUpdate : undefined}
+          isMonitoring={monitoring}
+          onToggleMonitoring={ptz ? handleToggleMonitoring : undefined}
         />
         <Controls
           settings={settings}
