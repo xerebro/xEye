@@ -54,6 +54,7 @@ export default function Controls({
   const zoom = Number(settings.zoom ?? 1);
   const exposureComp = Number(settings.ev ?? 0);
   const awbMode = settings.awb_mode || 'auto';
+  const awbSelectValue = awbMode === 'low_light' ? 'night' : awbMode;
 
   const handleExposureSlider = (event) => {
     onSettingsChange({ exposure_time_us: fromExposureSlider(Number(event.target.value)) });
@@ -75,7 +76,8 @@ export default function Controls({
   };
 
   const handleAwbMode = (event) => {
-    const value = event.target.value;
+    const rawValue = event.target.value;
+    const value = rawValue === 'night' ? 'low_light' : rawValue;
     const updates = { wb_preset: value, awb_mode: value };
     if (value === 'low_light') {
       updates.awb_enable = true;
@@ -160,7 +162,7 @@ export default function Controls({
             </label>
             <select
               aria-label="White balance mode"
-              value={awbMode}
+              value={awbSelectValue}
               onChange={handleAwbMode}
               disabled={!settings.awb_enable && awbMode !== 'low_light'}
             >
@@ -172,7 +174,7 @@ export default function Controls({
               <option value="daylight">Daylight</option>
               <option value="cloudy">Cloudy</option>
               <option value="custom">Custom (manual gains)</option>
-              <option value="low_light">Low light</option>
+              <option value="night">Night / Low light</option>
             </select>
           </div>
           <div className="control-row">

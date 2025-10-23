@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import Joystick from './Joystick.jsx';
-import PTZPad from './PTZPad.jsx';
 
 const STREAM_URL = '/api/stream.mjpg';
 export default function VideoPanel({ badge, onHome, ptz }) {
@@ -44,7 +43,6 @@ export default function VideoPanel({ badge, onHome, ptz }) {
           </div>
         </div>
       </div>
-      <PTZPad />
     </section>
   );
 }
