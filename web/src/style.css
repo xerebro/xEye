@@ -300,3 +300,64 @@ select {
 input[type='range'] {
   padding: 0;
 }
+
+.zoom-control {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.zoom-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.zoom-row input[type='range'] {
+  flex: 1;
+}
+
+.zoom-button {
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  font-size: 1.2rem;
+}
+
+.ptz-pad {
+  margin-top: 16px;
+  padding: 12px 16px 16px;
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.04);
+  display: grid;
+  gap: 12px;
+}
+
+.ptz-row {
+  display: flex;
+  gap: 12px;
+}
+
+.ptz-row.center {
+  justify-content: center;
+}
+
+.ptz-row.space {
+  justify-content: space-between;
+}
+
+.ptz-pad .ghost-button {
+  flex: 1;
+  min-width: 0;
+}

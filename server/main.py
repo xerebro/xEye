@@ -19,8 +19,11 @@ from .camera import (
     FrameProvider,
     MockFrameProvider,
     PICAMERA_AVAILABLE,
+    apply_color_and_quality,
+    apply_wb_and_lowlight_combo,
     format_mjpeg_frame,
     JPEG_BOUNDARY,
+    set_zoom,
 )
 # PTZ providers (PCA9685 I2C preferred, lgpio fallback)
 from .pantilt import LgpioPanTilt, Pca9685PanTilt
@@ -38,6 +41,19 @@ class CameraSettingsPatch(BaseModel):
     exposure_time_us: Optional[int] = Field(None, ge=100, le=1_000_000)
     iso_gain: Optional[float] = Field(None, ge=1.0, le=8.0)
     awb_enable: Optional[bool] = None
+    wb_preset: Optional[
+        Literal[
+            "auto",
+            "incandescent",
+            "tungsten",
+            "fluorescent",
+            "indoor",
+            "daylight",
+            "cloudy",
+            "custom",
+            "low_light",
+        ]
+    ] = None
     awb_mode: Optional[
         Literal[
             "auto",
@@ -212,6 +228,9 @@ pantilt_controller = create_pantilt_controller()
 
 allowed_origin = os.getenv("FRONTEND_ORIGIN", "http://localhost:5173")
 
+PTZ_INVERT_PAN = os.getenv("PTZ_INVERT_PAN", "1").lower() in {"1", "true", "yes"}
+PTZ_INVERT_TILT = os.getenv("PTZ_INVERT_TILT", "1").lower() in {"1", "true", "yes"}
+
 app = FastAPI(title="xEye Camera Controller", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
@@ -281,10 +300,28 @@ async def patch_camera_settings(payload: CameraSettingsPatch) -> Dict[str, objec
     patch = payload.to_payload()
     if not patch:
         return frame_provider.settings.to_dict()
+
+    wb_preset = patch.pop("wb_preset", None)
+    zoom_value = patch.pop("zoom", None)
+    # Remove color keys handled by helper to avoid duplicate updates
+    for key in ("saturation", "contrast", "sharpness", "ev"):
+        patch.pop(key, None)
+
+    if wb_preset is not None:
+        # Let the helper drive low-light transitions
+        patch.pop("low_light", None)
+
     try:
-        settings = frame_provider.update_settings(patch)
+        if any(value is not None for value in (payload.saturation, payload.contrast, payload.sharpness, payload.ev)):
+            apply_color_and_quality(payload.saturation, payload.contrast, payload.sharpness, payload.ev)
+        if wb_preset is not None:
+            apply_wb_and_lowlight_combo(wb_preset)
+        if zoom_value is not None:
+            set_zoom(zoom_value)
+        settings = frame_provider.update_settings(patch) if patch else frame_provider.settings
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     return settings.to_dict()
 
 
@@ -352,9 +389,18 @@ def _ptz_state_dict() -> Dict[str, object]:
 ptz_router = APIRouter(prefix="/api/ptz", tags=["ptz"])
 
 
+def _apply_ptz_inversion(dpan: float, dtilt: float) -> tuple[float, float]:
+    if PTZ_INVERT_PAN:
+        dpan = -dpan
+    if PTZ_INVERT_TILT:
+        dtilt = -dtilt
+    return dpan, dtilt
+
+
 @ptz_router.post("/relative")
 async def ptz_relative(move: PTZNudge) -> Dict[str, object]:
-    pantilt_controller.move_relative(move.pan_deg, move.tilt_deg)
+    dpan, dtilt = _apply_ptz_inversion(move.pan_deg, move.tilt_deg)
+    pantilt_controller.move_relative(dpan, dtilt)
     return {"ok": True, **_ptz_state_dict()}
 
 
@@ -374,7 +420,8 @@ async def pantilt_absolute(request: PTZAbsolute) -> Dict[str, object]:
 
 @app.post("/api/pantilt/relative")
 async def pantilt_relative(request: PTZRelative) -> Dict[str, object]:
-    pantilt_controller.set_relative(request.dpan_deg, request.dtilt_deg)  # LgpioPanTilt API
+    dpan, dtilt = _apply_ptz_inversion(request.dpan_deg, request.dtilt_deg)
+    pantilt_controller.set_relative(dpan, dtilt)  # LgpioPanTilt API
     return _ptz_state_dict()
 
 
