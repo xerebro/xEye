@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 
 const clampZoom = (value) => {
   const num = typeof value === 'number' ? value : parseFloat(value);
@@ -24,6 +24,8 @@ export default function PTZControls({
     return step;
   }, [step]);
 
+  const smoothStep = useMemo(() => Math.max(0.1, safeStep / 10), [safeStep]);
+
   const effectiveZoom = clampZoom(zoom);
   const isRelativeDisabled = !onRelativeMove || isMonitoring;
   const isZoomDisabled = !onZoomChange || isMonitoring;
@@ -33,6 +35,98 @@ export default function PTZControls({
     if (isRelativeDisabled) return;
     onRelativeMove({ dpan_deg: panDeg, dtilt_deg: tiltDeg });
   };
+
+  const pointerState = useRef({
+    timer: null,
+    pointerId: null,
+    suppressClick: false,
+    resetTimer: null,
+    target: null,
+  });
+
+  const clearPointerState = (event) => {
+    if (pointerState.current.timer) {
+      clearInterval(pointerState.current.timer);
+    }
+    pointerState.current.timer = null;
+    if (pointerState.current.resetTimer) {
+      clearTimeout(pointerState.current.resetTimer);
+      pointerState.current.resetTimer = null;
+    }
+    const pointerId = pointerState.current.pointerId;
+    const captureTarget = event?.currentTarget ?? pointerState.current.target;
+    pointerState.current.pointerId = null;
+    pointerState.current.target = null;
+    if (captureTarget && pointerId !== null && typeof captureTarget.releasePointerCapture === 'function') {
+      try {
+        captureTarget.releasePointerCapture(pointerId);
+      } catch (_) {
+        // Ignore release errors for symmetry with capture.
+      }
+    }
+  };
+
+  useEffect(() => () => clearPointerState(), []);
+
+  useEffect(() => {
+    if (!isRelativeDisabled) return;
+    clearPointerState();
+    pointerState.current.suppressClick = false;
+  }, [isRelativeDisabled]);
+
+  const startContinuousMove = (event, panMultiplier, tiltMultiplier) => {
+    if (isRelativeDisabled) return;
+    if (typeof event.button === 'number' && event.button !== 0 && event.button !== -1) {
+      return;
+    }
+    if (pointerState.current.resetTimer) {
+      clearTimeout(pointerState.current.resetTimer);
+      pointerState.current.resetTimer = null;
+    }
+    pointerState.current.suppressClick = true;
+    const performMove = () => {
+      handleMove(panMultiplier * smoothStep, tiltMultiplier * smoothStep);
+    };
+    performMove();
+    clearPointerState();
+    pointerState.current.pointerId = event.pointerId ?? null;
+    pointerState.current.target = event.currentTarget || null;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch (_) {
+      // Ignore lack of pointer capture support.
+    }
+    pointerState.current.timer = setInterval(performMove, 50);
+  };
+
+  const stopContinuousMove = (event) => {
+    const activePointerId = pointerState.current.pointerId;
+    if (activePointerId !== null && event && event.pointerId !== activePointerId) {
+      return;
+    }
+    clearPointerState(event);
+    pointerState.current.resetTimer = setTimeout(() => {
+      pointerState.current.suppressClick = false;
+      pointerState.current.resetTimer = null;
+    }, 0);
+  };
+
+  const createDirectionalHandlers = (panMultiplier, tiltMultiplier) => ({
+    onClick: () => {
+      if (pointerState.current.suppressClick) return;
+      handleMove(panMultiplier * safeStep, tiltMultiplier * safeStep);
+    },
+    onPointerDown: (event) => {
+      event.preventDefault();
+      startContinuousMove(event, panMultiplier, tiltMultiplier);
+    },
+    onPointerUp: (event) => {
+      event.preventDefault();
+      stopContinuousMove(event);
+    },
+    onPointerCancel: stopContinuousMove,
+    onPointerLeave: stopContinuousMove,
+  });
 
   const adjustZoom = (delta) => {
     if (isZoomDisabled) return;
@@ -55,7 +149,7 @@ export default function PTZControls({
         <button
           type="button"
           className="ghost-button arrow-button"
-          onClick={() => handleMove(0, safeStep)}
+          {...createDirectionalHandlers(0, 1)}
           disabled={isRelativeDisabled}
           aria-label="Nudge up"
         >
@@ -65,7 +159,7 @@ export default function PTZControls({
           <button
             type="button"
             className="ghost-button arrow-button"
-            onClick={() => handleMove(-safeStep, 0)}
+            {...createDirectionalHandlers(-1, 0)}
             disabled={isRelativeDisabled}
             aria-label="Nudge left"
           >
@@ -77,7 +171,7 @@ export default function PTZControls({
           <button
             type="button"
             className="ghost-button arrow-button"
-            onClick={() => handleMove(safeStep, 0)}
+            {...createDirectionalHandlers(1, 0)}
             disabled={isRelativeDisabled}
             aria-label="Nudge right"
           >
@@ -87,7 +181,7 @@ export default function PTZControls({
         <button
           type="button"
           className="ghost-button arrow-button"
-          onClick={() => handleMove(0, -safeStep)}
+          {...createDirectionalHandlers(0, -1)}
           disabled={isRelativeDisabled}
           aria-label="Nudge down"
         >

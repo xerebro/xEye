@@ -200,31 +200,95 @@ export default function App() {
     const tiltLimits = ptz.limits?.tilt ?? [-70, 70];
 
     const clamp = (value, [min, max]) => Math.max(min, Math.min(max, value));
-
-    const patrolPoints = [
-      { pan_deg: -40, tilt_deg: 0 },
-      { pan_deg: -40, tilt_deg: 40 },
-      { pan_deg: 0, tilt_deg: 40 },
-      { pan_deg: 40, tilt_deg: 40 },
-      { pan_deg: 40, tilt_deg: 0 },
-      { pan_deg: 40, tilt_deg: -40 },
-      { pan_deg: 0, tilt_deg: -40 },
-      { pan_deg: -40, tilt_deg: -40 },
-      { pan_deg: 0, tilt_deg: 0 },
-    ].map((point) => ({
-      pan_deg: clamp(point.pan_deg, panLimits),
-      tilt_deg: clamp(point.tilt_deg, tiltLimits),
-    }));
-
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+    const panLeft = clamp(-60, panLimits);
+    const panRight = clamp(60, panLimits);
+    const tiltTop = clamp(30, tiltLimits);
+    const tiltBottom = clamp(-30, tiltLimits);
+
+    const hasPanRange = Math.abs(panRight - panLeft) > 0.01;
+    const hasTiltRange = Math.abs(tiltTop - tiltBottom) > 0.01;
+
+    const PAN_STEP = 2;
+    const TILT_STEP = 2;
+    const PAN_DELAY = 250;
+    const TILT_DELAY = 600;
+
+    const safeApply = async (pan, tilt) => {
+      if (cancelled || !monitoringRef.current) {
+        return;
+      }
+      try {
+        await applyAbsolute({ pan_deg: pan, tilt_deg: tilt });
+      } catch (error) {
+        console.error(error);
+      }
+    };
+
     const cycle = async () => {
-      let index = 0;
+      let currentPan = panLeft;
+      let currentTilt = tiltTop;
+      let panDirection = 1;
+      let tiltDirection = -1;
+
+      await safeApply(currentPan, currentTilt);
+      await wait(800);
+
       while (!cancelled && monitoringRef.current) {
-        const target = patrolPoints[index];
-        index = (index + 1) % patrolPoints.length;
-        await applyAbsolute(target);
-        await wait(1500);
+        if (hasPanRange) {
+          const targetPan = panDirection === 1 ? panRight : panLeft;
+          while (
+            !cancelled &&
+            monitoringRef.current &&
+            ((panDirection === 1 && currentPan < targetPan) ||
+              (panDirection === -1 && currentPan > targetPan))
+          ) {
+            currentPan += panDirection * PAN_STEP;
+            if (panDirection === 1) {
+              currentPan = Math.min(currentPan, targetPan);
+            } else {
+              currentPan = Math.max(currentPan, targetPan);
+            }
+            currentPan = clamp(currentPan, panLimits);
+            await safeApply(currentPan, currentTilt);
+            await wait(PAN_DELAY);
+          }
+        } else {
+          await wait(PAN_DELAY);
+        }
+
+        if (cancelled || !monitoringRef.current) {
+          break;
+        }
+
+        if (hasTiltRange) {
+          if (tiltDirection === -1 && currentTilt <= tiltBottom) {
+            tiltDirection = 1;
+          } else if (tiltDirection === 1 && currentTilt >= tiltTop) {
+            tiltDirection = -1;
+          }
+
+          let nextTilt = currentTilt + tiltDirection * TILT_STEP;
+          if (tiltDirection === -1 && nextTilt < tiltBottom) {
+            nextTilt = tiltBottom;
+          }
+          if (tiltDirection === 1 && nextTilt > tiltTop) {
+            nextTilt = tiltTop;
+          }
+
+          if (nextTilt !== currentTilt) {
+            currentTilt = clamp(nextTilt, tiltLimits);
+            await safeApply(currentPan, currentTilt);
+            await wait(TILT_DELAY);
+          } else {
+            await wait(TILT_DELAY);
+          }
+        } else {
+          await wait(TILT_DELAY);
+        }
+
+        panDirection *= -1;
       }
     };
 
