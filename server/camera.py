@@ -6,8 +6,8 @@ import io
 import logging
 import threading
 import time
-from dataclasses import dataclass, field
-from typing import Dict, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, Optional
 
 try:  # pragma: no cover - import side effect only validated on device
     from picamera2 import Picamera2
@@ -18,7 +18,7 @@ except ImportError:  # pragma: no cover - allows development without hardware
 
 PICAMERA_AVAILABLE = Picamera2 is not None
 
-from PIL import Image, ImageEnhance
+from PIL import Image
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +26,31 @@ logger = logging.getLogger(__name__)
 JPEG_BOUNDARY = "frame"
 DEFAULT_STREAM_SIZE = (640, 480)
 DEFAULT_FPS = 15
-DEFAULT_JPEG_QUALITY = 80
+DEFAULT_JPEG_QUALITY = 92
+
+DEFAULT_SATURATION = 1.15
+DEFAULT_CONTRAST = 1.05
+DEFAULT_SHARPNESS = 1.10
+
+_AWB_MODE_ATTRS: Dict[str, str] = {
+    "auto": "AwbAuto",
+    "incandescent": "AwbIncandescent",
+    "tungsten": "AwbTungsten",
+    "fluorescent": "AwbFluorescent",
+    "indoor": "AwbIndoor",
+    "daylight": "AwbDaylight",
+    "cloudy": "AwbCloudy",
+    "custom": "AwbCustom",
+}
+
+
+def _resolve_awb_enum(preset: str) -> Any:
+    if libcamera_controls is None:
+        return None
+    name = _AWB_MODE_ATTRS.get(preset.lower())
+    if not name:
+        return None
+    return getattr(libcamera_controls.AwbModeEnum, name, None)
 
 
 @dataclass
@@ -38,10 +62,10 @@ class CameraSettings:
     iso_gain: float = 2.0
     awb_enable: bool = True
     awb_mode: str = "auto"
-    brightness: float = 0.0
-    contrast: float = 1.0
-    saturation: float = 1.0
-    sharpness: float = 1.0
+    contrast: float = DEFAULT_CONTRAST
+    saturation: float = DEFAULT_SATURATION
+    sharpness: float = DEFAULT_SHARPNESS
+    ev: float = 0.0
     low_light: bool = False
     zoom: float = 1.0
 
@@ -52,10 +76,10 @@ class CameraSettings:
             "iso_gain": self.iso_gain,
             "awb_enable": self.awb_enable,
             "awb_mode": self.awb_mode,
-            "brightness": self.brightness,
             "contrast": self.contrast,
             "saturation": self.saturation,
             "sharpness": self.sharpness,
+            "ev": self.ev,
             "low_light": self.low_light,
             "zoom": self.zoom,
         }
@@ -67,52 +91,20 @@ class CameraSettings:
             if key not in data:
                 raise ValueError(f"Unsupported setting: {key}")
             data[key] = value
+        if "low_light" in payload and "awb_mode" not in payload:
+            if bool(payload["low_light"]):
+                data["awb_mode"] = "low_light"
+            elif str(data.get("awb_mode", "auto")).lower() == "low_light":
+                data["awb_mode"] = "auto"
+
+        awb_mode = str(data.get("awb_mode", "auto")).lower()
+        if awb_mode == "low_light":
+            data["low_light"] = True
+            data["awb_enable"] = True
+        else:
+            data["low_light"] = False
+
         return cls(**data)
-
-
-@dataclass
-class PostProcessState:
-    brightness: float = 0.0
-    contrast: float = 1.0
-    saturation: float = 1.0
-    sharpness: float = 1.0
-    _cache_key: tuple = field(default_factory=lambda: (0.0, 1.0, 1.0, 1.0))
-
-    def needs_processing(self, settings: CameraSettings) -> bool:
-        key = (
-            settings.brightness,
-            settings.contrast,
-            settings.saturation,
-            settings.sharpness,
-        )
-        return key != self._cache_key
-
-    def update(self, settings: CameraSettings) -> None:
-        self._cache_key = (
-            settings.brightness,
-            settings.contrast,
-            settings.saturation,
-            settings.sharpness,
-        )
-        self.brightness = settings.brightness
-        self.contrast = settings.contrast
-        self.saturation = settings.saturation
-        self.sharpness = settings.sharpness
-
-    def apply(self, image: Image.Image) -> Image.Image:
-        if self.brightness != 0.0:
-            enhancer = ImageEnhance.Brightness(image)
-            image = enhancer.enhance(1.0 + self.brightness)
-        if self.contrast != 1.0:
-            enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(self.contrast)
-        if self.saturation != 1.0:
-            enhancer = ImageEnhance.Color(image)
-            image = enhancer.enhance(self.saturation)
-        if self.sharpness != 1.0:
-            enhancer = ImageEnhance.Sharpness(image)
-            image = enhancer.enhance(self.sharpness)
-        return image
 
 
 class FrameProvider:
@@ -129,10 +121,16 @@ class FrameProvider:
 
         self._resolution = resolution
         self._fps = fps
-        self._jpeg_quality = jpeg_quality
+        try:
+            self._jpeg_quality = max(1, min(95, int(jpeg_quality)))
+        except (TypeError, ValueError):
+            self._jpeg_quality = DEFAULT_JPEG_QUALITY
         self._picam = Picamera2()
+        try:
+            self._picam.options["quality"] = self._jpeg_quality
+        except Exception:
+            logger.debug("Unable to set Picamera2 JPEG quality option", exc_info=True)
         self._settings = CameraSettings()
-        self._post_state = PostProcessState()
         self._low_light_enabled = False
         self._default_frame_limits: tuple[int, int] | None = None
         self._sensor_resolution = getattr(self._picam, "sensor_resolution", None)
@@ -178,10 +176,6 @@ class FrameProvider:
             start = time.monotonic()
             frame = self._picam.capture_array("main")
             image = Image.fromarray(frame)
-
-            if self._post_state.needs_processing(self._settings):
-                self._post_state.update(self._settings)
-            image = self._post_state.apply(image)
 
             buffer = io.BytesIO()
             image.save(buffer, format="JPEG", quality=self._jpeg_quality)
@@ -243,9 +237,12 @@ class FrameProvider:
             controls["ExposureTime"] = int(settings.exposure_time_us)
             controls["AnalogueGain"] = float(settings.iso_gain)
 
-        controls["AwbEnable"] = bool(settings.awb_enable)
-        if settings.awb_mode and libcamera_controls is not None:
-            enum = getattr(libcamera_controls.AwbModeEnum, settings.awb_mode.capitalize(), None)
+        awb_mode = str(settings.awb_mode or "auto").lower()
+        low_light_selected = awb_mode == "low_light"
+        awb_enable = bool(settings.awb_enable) or low_light_selected
+        controls["AwbEnable"] = awb_enable
+        if awb_enable:
+            enum = _resolve_awb_enum("auto" if low_light_selected else awb_mode)
             if enum is not None:
                 controls["AwbMode"] = enum
 
@@ -255,13 +252,15 @@ class FrameProvider:
             logger.exception("Failed to set camera controls: %s", controls)
 
         self._apply_low_light(settings)
+        self._apply_color_controls(settings)
         self._apply_zoom(settings.zoom)
 
     def _apply_low_light(self, settings: CameraSettings) -> None:
         if not PICAMERA_AVAILABLE:
             return
 
-        enable = bool(settings.low_light and settings.exposure_mode == "auto")
+        awb_mode = str(settings.awb_mode or "auto").lower()
+        enable = bool(awb_mode == "low_light" and settings.exposure_mode == "auto")
         if enable == self._low_light_enabled:
             return
 
@@ -271,11 +270,14 @@ class FrameProvider:
                     "AeEnable": True,
                     "AeExposureMode": 2,
                     "FrameDurationLimits": (20000, 200000),
-                    "AwbEnable": True,
                     "NoiseReductionMode": 2,
                 }
                 self._picam.set_controls(controls)
-                self._picam.set_controls({"ExposureTime": 0})
+                try:
+                    if "HdrMode" in getattr(self._picam, "camera_controls", {}):
+                        self._picam.set_controls({"HdrMode": 3})
+                except Exception:
+                    logger.debug("HDR Night mode not available", exc_info=True)
             else:
                 limits = self._default_frame_limits or (int(1e6 / self._fps), int(1e6 / self._fps))
                 controls = {
@@ -283,11 +285,33 @@ class FrameProvider:
                     "FrameDurationLimits": limits,
                     "NoiseReductionMode": 1,
                 }
+                if self._low_light_enabled:
+                    try:
+                        if "HdrMode" in getattr(self._picam, "camera_controls", {}):
+                            self._picam.set_controls({"HdrMode": 0})
+                    except Exception:
+                        logger.debug("Failed to disable HDR mode", exc_info=True)
                 self._picam.set_controls(controls)
         except Exception:  # pragma: no cover - hardware specific failure path
             logger.exception("Failed to toggle low-light controls")
         finally:
             self._low_light_enabled = enable
+
+    def _apply_color_controls(self, settings: CameraSettings) -> None:
+        if not PICAMERA_AVAILABLE:
+            return
+
+        controls: Dict[str, Any] = {
+            "Saturation": float(settings.saturation),
+            "Contrast": float(settings.contrast),
+            "Sharpness": float(settings.sharpness),
+            "ExposureValue": float(settings.ev),
+        }
+
+        try:
+            self._picam.set_controls(controls)
+        except Exception:  # pragma: no cover - hardware specific failure path
+            logger.exception("Failed to set color controls: %s", controls)
 
     def _apply_zoom(self, level: float) -> None:
         if not PICAMERA_AVAILABLE:
@@ -337,7 +361,9 @@ class MockFrameProvider(FrameProvider):
         self._fps = DEFAULT_FPS
         self._jpeg_quality = DEFAULT_JPEG_QUALITY
         self._settings = CameraSettings()
-        self._post_state = PostProcessState()
+        self._low_light_enabled = False
+        self._default_frame_limits: tuple[int, int] | None = None
+        self._sensor_resolution: tuple[int, int] | None = None
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._last_jpeg: Optional[bytes] = None

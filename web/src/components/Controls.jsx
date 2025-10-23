@@ -48,12 +48,12 @@ export default function Controls({
   }
 
   const isoGain = Number(settings.iso_gain ?? 1);
-  const brightness = Number(settings.brightness ?? 0);
   const contrast = Number(settings.contrast ?? 1);
   const saturation = Number(settings.saturation ?? 1);
   const sharpness = Number(settings.sharpness ?? 1);
-  const lowLight = Boolean(settings.low_light);
   const zoom = Number(settings.zoom ?? 1);
+  const exposureComp = Number(settings.ev ?? 0);
+  const awbMode = settings.awb_mode || 'auto';
 
   const handleExposureSlider = (event) => {
     onSettingsChange({ exposure_time_us: fromExposureSlider(Number(event.target.value)) });
@@ -64,15 +64,26 @@ export default function Controls({
   };
 
   const handleAwbEnable = (event) => {
-    onSettingsChange({ awb_enable: event.target.checked });
+    const checked = event.target.checked;
+    const updates = { awb_enable: checked };
+    if (!checked && awbMode === 'low_light') {
+      updates.awb_mode = 'auto';
+      updates.low_light = false;
+    }
+    onSettingsChange(updates);
   };
 
   const handleAwbMode = (event) => {
-    onSettingsChange({ awb_mode: event.target.value });
-  };
-
-  const handleLowLight = (event) => {
-    onSettingsChange({ low_light: event.target.checked });
+    const value = event.target.value;
+    if (value === 'low_light') {
+      onSettingsChange({ awb_mode: value, awb_enable: true, low_light: true });
+    } else {
+      const updates = { awb_mode: value };
+      if (awbMode === 'low_light') {
+        updates.low_light = false;
+      }
+      onSettingsChange(updates);
+    }
   };
 
   const handleRange = (key) => (event) => {
@@ -153,39 +164,31 @@ export default function Controls({
             </label>
             <select
               aria-label="White balance mode"
-              value={settings.awb_mode}
+              value={awbMode}
               onChange={handleAwbMode}
-              disabled={!settings.awb_enable}
+              disabled={!settings.awb_enable && awbMode !== 'low_light'}
             >
               <option value="auto">Auto</option>
               <option value="incandescent">Incandescent</option>
+              <option value="tungsten">Tungsten</option>
               <option value="fluorescent">Fluorescent</option>
+              <option value="indoor">Indoor</option>
               <option value="daylight">Daylight</option>
               <option value="cloudy">Cloudy</option>
+              <option value="custom">Custom (manual gains)</option>
+              <option value="low_light">Low light</option>
             </select>
           </div>
           <div className="control-row">
-            <label htmlFor="low-light" title="Available in auto exposure mode">
-              <input
-                id="low-light"
-                type="checkbox"
-                checked={lowLight}
-                disabled={settings.exposure_mode !== 'auto'}
-                onChange={handleLowLight}
-              />{' '}
-              Low light mode
-            </label>
-          </div>
-          <div className="control-row">
-            <label htmlFor="brightness">Brightness ({brightness.toFixed(2)})</label>
+            <label htmlFor="ev">Exposure compensation ({exposureComp.toFixed(1)} EV)</label>
             <input
-              id="brightness"
+              id="ev"
               type="range"
-              min="-1"
-              max="1"
-              step="0.05"
-              value={brightness}
-              onChange={handleRange('brightness')}
+              min="-2"
+              max="2"
+              step="0.1"
+              value={exposureComp}
+              onChange={handleRange('ev')}
             />
           </div>
           <div className="control-row">
