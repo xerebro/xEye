@@ -39,12 +39,22 @@ class CameraSettingsPatch(BaseModel):
     iso_gain: Optional[float] = Field(None, ge=1.0, le=8.0)
     awb_enable: Optional[bool] = None
     awb_mode: Optional[
-        Literal["auto", "incandescent", "fluorescent", "daylight", "cloudy"]
+        Literal[
+            "auto",
+            "incandescent",
+            "tungsten",
+            "fluorescent",
+            "indoor",
+            "daylight",
+            "cloudy",
+            "custom",
+            "low_light",
+        ]
     ] = None
-    brightness: Optional[float] = Field(None, ge=-1.0, le=1.0)
     contrast: Optional[float] = Field(None, ge=0.0, le=2.0)
     saturation: Optional[float] = Field(None, ge=0.0, le=2.0)
     sharpness: Optional[float] = Field(None, ge=0.0, le=2.0)
+    ev: Optional[float] = Field(None, ge=-3.0, le=3.0)
     low_light: Optional[bool] = None
     zoom: Optional[float] = Field(None, ge=1.0, le=4.0)
 
