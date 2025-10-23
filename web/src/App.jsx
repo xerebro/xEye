@@ -87,7 +87,21 @@ export default function App() {
 
   const handleSettingsChange = useCallback((partial) => {
     const snapshotBefore = lastKnownSettings.current ? { ...lastKnownSettings.current } : null;
-    setSettings((prev) => (prev ? { ...prev, ...partial } : prev));
+    const optimistic = { ...partial };
+    if (Object.prototype.hasOwnProperty.call(partial, 'wb_preset')) {
+      const preset = partial.wb_preset;
+      if (preset != null) {
+        optimistic.awb_mode = preset;
+        if (preset === 'low_light') {
+          optimistic.low_light = true;
+          optimistic.awb_enable = true;
+        } else {
+          optimistic.low_light = false;
+        }
+      }
+      delete optimistic.wb_preset;
+    }
+    setSettings((prev) => (prev ? { ...prev, ...optimistic } : prev));
     patchCameraSettings(partial)
       .then((updated) => {
         const snapshot = { ...updated };
@@ -205,7 +219,6 @@ export default function App() {
           onResetSettings={handleResetSettings}
           onSnapshot={handleSnapshot}
           onAbsoluteMove={applyAbsolute}
-          onRelativeMove={applyRelative}
           onHome={handleHome}
         />
       </main>

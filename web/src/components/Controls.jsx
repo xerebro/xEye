@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import ZoomControl from './ZoomControl.jsx';
 
 const EXPOSURE_MIN = 100;
 const EXPOSURE_MAX = 1_000_000;
@@ -24,7 +25,6 @@ export default function Controls({
   onResetSettings,
   onSnapshot,
   onAbsoluteMove,
-  onRelativeMove,
   onHome,
 }) {
   const [pan, setPan] = useState(0);
@@ -67,6 +67,7 @@ export default function Controls({
     const checked = event.target.checked;
     const updates = { awb_enable: checked };
     if (!checked && awbMode === 'low_light') {
+      updates.wb_preset = 'auto';
       updates.awb_mode = 'auto';
       updates.low_light = false;
     }
@@ -75,23 +76,18 @@ export default function Controls({
 
   const handleAwbMode = (event) => {
     const value = event.target.value;
+    const updates = { wb_preset: value, awb_mode: value };
     if (value === 'low_light') {
-      onSettingsChange({ awb_mode: value, awb_enable: true, low_light: true });
-    } else {
-      const updates = { awb_mode: value };
-      if (awbMode === 'low_light') {
-        updates.low_light = false;
-      }
-      onSettingsChange(updates);
+      updates.awb_enable = true;
+      updates.low_light = true;
+    } else if (awbMode === 'low_light') {
+      updates.low_light = false;
     }
+    onSettingsChange(updates);
   };
 
   const handleRange = (key) => (event) => {
     onSettingsChange({ [key]: Number(event.target.value) });
-  };
-
-  const handleZoom = (event) => {
-    onSettingsChange({ zoom: Number(event.target.value) });
   };
 
   const handleAbsoluteSubmit = (event) => {
@@ -227,18 +223,7 @@ export default function Controls({
               onChange={handleRange('sharpness')}
             />
           </div>
-          <div className="control-row">
-            <label htmlFor="zoom">Zoom ({zoom.toFixed(1)}×)</label>
-            <input
-              id="zoom"
-              type="range"
-              min="1"
-              max="4"
-              step="0.1"
-              value={zoom}
-              onChange={handleZoom}
-            />
-          </div>
+          <ZoomControl value={zoom} onChange={(nextZoom) => onSettingsChange({ zoom: Number(nextZoom) })} />
         </section>
 
         <section className="control-group" aria-label="Pan tilt controls">
@@ -273,20 +258,6 @@ export default function Controls({
               </button>
             </div>
           </form>
-          <div className="button-row">
-            <button type="button" className="ghost-button" onClick={() => onRelativeMove?.({ dpan_deg: -5, dtilt_deg: 0 })}>
-              ◀ Left
-            </button>
-            <button type="button" className="ghost-button" onClick={() => onRelativeMove?.({ dpan_deg: 5, dtilt_deg: 0 })}>
-              Right ▶
-            </button>
-            <button type="button" className="ghost-button" onClick={() => onRelativeMove?.({ dpan_deg: 0, dtilt_deg: 5 })}>
-              ▲ Up
-            </button>
-            <button type="button" className="ghost-button" onClick={() => onRelativeMove?.({ dpan_deg: 0, dtilt_deg: -5 })}>
-              Down ▼
-            </button>
-          </div>
         </section>
 
         <section className="control-group" aria-label="Actions">

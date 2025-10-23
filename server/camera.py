@@ -44,6 +44,96 @@ _AWB_MODE_ATTRS: Dict[str, str] = {
 }
 
 
+_active_frame_provider: Any | None = None
+
+
+def set_active_frame_provider(provider: Any | None) -> None:
+    """Record the active frame provider for helper functions."""
+
+    global _active_frame_provider
+    _active_frame_provider = provider
+
+
+def get_active_frame_provider() -> Any | None:
+    """Return the active frame provider if one has been started."""
+
+    return _active_frame_provider
+
+
+def _provider_for_helpers() -> Any | None:
+    provider = get_active_frame_provider()
+    if provider is None:
+        logger.debug("No active frame provider available for camera helper")
+    return provider
+
+
+def apply_color_and_quality(
+    saturation: Optional[float] = None,
+    contrast: Optional[float] = None,
+    sharpness: Optional[float] = None,
+    ev: Optional[float] = None,
+) -> None:
+    """Apply color-related controls to the active frame provider."""
+
+    provider = _provider_for_helpers()
+    if provider is None:
+        return
+
+    patch: Dict[str, float] = {}
+    if saturation is not None:
+        patch["saturation"] = float(saturation)
+    if contrast is not None:
+        patch["contrast"] = float(contrast)
+    if sharpness is not None:
+        patch["sharpness"] = float(sharpness)
+    if ev is not None:
+        patch["ev"] = float(ev)
+
+    if not patch:
+        return
+
+    provider.update_settings(patch)
+
+
+def apply_wb_and_lowlight_combo(selection: str) -> None:
+    """Toggle white balance presets and low-light bundle."""
+
+    provider = _provider_for_helpers()
+    if provider is None:
+        return
+
+    preset = (selection or "auto").lower()
+    patch: Dict[str, Any] = {"awb_mode": preset}
+    if preset == "low_light":
+        patch["low_light"] = True
+        patch["awb_enable"] = True
+    else:
+        patch["low_light"] = False
+
+    provider.update_settings(patch)
+
+
+def set_zoom(level: float) -> float:
+    """Apply digital zoom to the active frame provider and return the clamped level."""
+
+    provider = _provider_for_helpers()
+    try:
+        zoom = float(level)
+    except (TypeError, ValueError):
+        zoom = 1.0
+
+    zoom = max(1.0, min(4.0, zoom))
+    if provider is None:
+        return zoom
+
+    provider.update_settings({"zoom": zoom})
+    try:
+        current_zoom = float(getattr(provider.settings, "zoom", zoom))
+    except Exception:
+        current_zoom = zoom
+    return current_zoom
+
+
 def _resolve_awb_enum(preset: str) -> Any:
     if libcamera_controls is None:
         return None
@@ -156,6 +246,7 @@ class FrameProvider:
         self._picam.start()
 
         self._running = True
+        set_active_frame_provider(self)
         self._thread = threading.Thread(target=self._capture_loop, name="FrameProvider", daemon=True)
         self._thread.start()
         logger.info("Frame provider started at %sx%s @ %sfps", *self._resolution, self._fps)
@@ -168,6 +259,8 @@ class FrameProvider:
             self._thread.join(timeout=1.0)
         self._thread = None
         self._picam.stop()
+        if get_active_frame_provider() is self:
+            set_active_frame_provider(None)
         logger.info("Frame provider stopped")
 
     def _capture_loop(self) -> None:
@@ -377,6 +470,7 @@ class MockFrameProvider(FrameProvider):
         self._running = True
         self._thread = threading.Thread(target=self._mock_loop, daemon=True)
         self._thread.start()
+        set_active_frame_provider(self)
 
     def stop(self) -> None:  # type: ignore[override]
         with self._condition:
@@ -385,6 +479,8 @@ class MockFrameProvider(FrameProvider):
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self._thread = None
+        if get_active_frame_provider() is self:
+            set_active_frame_provider(None)
         
     def _mock_loop(self) -> None:
         from PIL import ImageDraw  # imported lazily to avoid heavy deps
