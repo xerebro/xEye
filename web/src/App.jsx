@@ -190,14 +190,20 @@ export default function App() {
     }
   }, [ptz]);
 
+  const panMin = ptz?.limits?.pan?.[0] ?? -90;
+  const panMax = ptz?.limits?.pan?.[1] ?? 90;
+  const tiltMin = ptz?.limits?.tilt?.[0] ?? -70;
+  const tiltMax = ptz?.limits?.tilt?.[1] ?? 70;
+  const hasPtz = Boolean(ptz);
+
   useEffect(() => {
-    if (!monitoring || !ptz) {
+    if (!monitoring || !hasPtz) {
       return undefined;
     }
 
     let cancelled = false;
-    const panLimits = ptz.limits?.pan ?? [-90, 90];
-    const tiltLimits = ptz.limits?.tilt ?? [-70, 70];
+    const panLimits = [panMin, panMax];
+    const tiltLimits = [tiltMin, tiltMax];
 
     const clamp = (value, [min, max]) => Math.max(min, Math.min(max, value));
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -297,7 +303,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [monitoring, ptz, applyAbsolute]);
+  }, [monitoring, hasPtz, panMin, panMax, tiltMin, tiltMax, applyAbsolute]);
 
   const handleToggleMonitoring = useCallback(() => {
     if (!ptz) {
