@@ -1,0 +1,19 @@
+services:
+  xeye-processor:
+    build: .
+    image: xeye-processor:latest
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: ["gpu"]
+    environment:
+      - MODEL_NAME=yolo11s.pt
+      - CONF_THRES=0.35
+      - IOU_THRES=0.45
+      - IMGSZ=640
+      - FP16=1
+      - AUTOCUDA=1
+    runtime: nvidia

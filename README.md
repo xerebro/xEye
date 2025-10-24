@@ -35,3 +35,18 @@ cd web
 npm install
 npm run dev
 ```
+
+## Detección asistida por GPU
+
+El backend puede superponer detecciones provenientes del nuevo servicio `xEyeProcessor`
+(ubicado en `xEyeProcessor/`). Configure las siguientes variables de entorno en la
+Raspberry Pi para habilitar el envío de frames al procesador con GPU:
+
+- `XEYE_PROCESSOR_URL`: URL base del servicio remoto (por ejemplo `http://192.168.0.10:8000`).
+- `DET_EVERY_N`: envía uno de cada *N* frames para inferencia (por defecto `2`).
+- `DET_MAX_AGE_MS` *(opcional)*: tiempo máximo en milisegundos para considerar válida una detección (por defecto `500`).
+- `DET_TIMEOUT` *(opcional)*: timeout de la petición HTTP en segundos (por defecto `1.5`).
+
+También se incluye un ejemplo de cliente de cámara en `backend/run_cam_client.py` y una
+unit systemd de referencia en `deploy/pi/xeye-client.service` para automatizar el arranque
+en la Raspberry Pi.

@@ -4,10 +4,23 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+
+try:  # pragma: no cover - optional dependency on OpenCV
+    import cv2  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - development without cv2
+    cv2 = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - optional detection overlay client
+    from backend.detection_client import DetectionClient
+    from backend.overlay import draw_detections
+except Exception:  # pragma: no cover - backend helpers missing in some environments
+    DetectionClient = None  # type: ignore[assignment]
+    draw_detections = None  # type: ignore[assignment]
 
 try:  # pragma: no cover - import side effect only validated on device
     from picamera2 import Picamera2
@@ -225,11 +238,47 @@ class FrameProvider:
         self._default_frame_limits: tuple[int, int] | None = None
         self._sensor_resolution = getattr(self._picam, "sensor_resolution", None)
 
+        self._det_client: DetectionClient | None = None  # type: ignore[valid-type]
+        self._det_enabled = False
+        self._det_counter = 0
+        try:
+            det_every_n = int(os.getenv("DET_EVERY_N", "2"))
+        except (TypeError, ValueError):
+            det_every_n = 2
+        self._det_every_n = det_every_n if det_every_n > 0 else 1
+        try:
+            overlay_ms = float(os.getenv("DET_MAX_AGE_MS", "500"))
+        except (TypeError, ValueError):
+            overlay_ms = 500.0
+        self._det_overlay_max_age = max(0.0, overlay_ms) / 1000.0
+        try:
+            det_timeout = float(os.getenv("DET_TIMEOUT", "1.5"))
+        except (TypeError, ValueError):
+            det_timeout = 1.5
+        self._det_timeout = det_timeout
+
         self._lock = threading.Lock()
         self._condition = threading.Condition(self._lock)
         self._last_jpeg: Optional[bytes] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+
+        det_url = os.getenv("XEYE_PROCESSOR_URL")
+        if det_url and DetectionClient and cv2 is not None and draw_detections:
+            try:
+                self._det_client = DetectionClient(det_url, timeout=self._det_timeout)
+                self._det_enabled = True
+                logger.info(
+                    "Detection overlay enabled (url=%s every %d frames)",
+                    det_url,
+                    self._det_every_n,
+                )
+            except Exception:  # pragma: no cover - network/hardware specific failure path
+                logger.exception("Failed to initialize DetectionClient; disabling overlay")
+        elif det_url:
+            logger.warning(
+                "Detection overlay disabled (OpenCV or backend helpers unavailable)"
+            )
 
     def start(self) -> None:
         if self._running:
@@ -261,6 +310,10 @@ class FrameProvider:
         self._picam.stop()
         if get_active_frame_provider() is self:
             set_active_frame_provider(None)
+        if self._det_client:
+            self._det_client.close()
+            self._det_client = None
+            self._det_enabled = False
         logger.info("Frame provider stopped")
 
     def _capture_loop(self) -> None:
@@ -268,7 +321,32 @@ class FrameProvider:
         while self._running:
             start = time.monotonic()
             frame = self._picam.capture_array("main")
-            image = Image.fromarray(frame)
+            rgb_frame = frame
+            if (
+                self._det_enabled
+                and self._det_client
+                and cv2 is not None
+                and draw_detections is not None
+            ):
+                try:
+                    bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    if self._det_counter % self._det_every_n == 0:
+                        self._det_client.submit(bgr)
+                    det = self._det_client.get_last()
+                    if det and (time.time() - det.ts) <= self._det_overlay_max_age:
+                        annotated = draw_detections(bgr.copy(), det)
+                        rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                except Exception:  # pragma: no cover - relies on optional deps
+                    logger.exception("Detection overlay failed; disabling until restart")
+                    try:
+                        if self._det_client:
+                            self._det_client.close()
+                    finally:
+                        self._det_client = None
+                        self._det_enabled = False
+                finally:
+                    self._det_counter += 1
+            image = Image.fromarray(rgb_frame)
 
             buffer = io.BytesIO()
             image.save(buffer, format="JPEG", quality=self._jpeg_quality)
@@ -463,6 +541,12 @@ class MockFrameProvider(FrameProvider):
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._picam = None
+        self._det_client = None
+        self._det_enabled = False
+        self._det_counter = 0
+        self._det_every_n = 1
+        self._det_overlay_max_age = 0.5
+        self._det_timeout = 1.5
 
     def start(self) -> None:  # type: ignore[override]
         if self._running:
@@ -481,6 +565,10 @@ class MockFrameProvider(FrameProvider):
         self._thread = None
         if get_active_frame_provider() is self:
             set_active_frame_provider(None)
+        if self._det_client:
+            self._det_client.close()
+            self._det_client = None
+            self._det_enabled = False
         
     def _mock_loop(self) -> None:
         from PIL import ImageDraw  # imported lazily to avoid heavy deps
