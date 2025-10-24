@@ -1,0 +1,15 @@
+[Unit]
+Description=xEye Pi Client (camera -> REST -> overlay)
+After=network-online.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/xEye/backend
+Environment=XEYE_PROCESSOR_URL=http://<PC_GPU_IP>:8000
+Environment=DET_EVERY_N=2
+ExecStart=/usr/bin/python3 run_cam_client.py
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
