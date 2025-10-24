@@ -7,7 +7,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        // Force IPv4 loopback to avoid environments where `localhost`
+        // resolves to ::1 and the backend only listens on IPv4.
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },
