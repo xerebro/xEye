@@ -238,7 +238,7 @@ class FrameProvider:
         frame_limit = (int(1e6 / self._fps), int(1e6 / self._fps))
         self._default_frame_limits = frame_limit
         stream_config = self._picam.create_video_configuration(
-            main={"size": self._resolution, "format": "RGB888"},
+            main={"size": self._resolution, "format": "BGR888"},
             controls={"FrameDurationLimits": frame_limit},
         )
         self._picam.configure(stream_config)
